@@ -47,6 +47,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     register('parful.launchCodex', () => launchAgent(sessions, 'codex')),
     register('parful.launchClaude', () => launchAgent(sessions, 'claude')),
     register('parful.launchCustom', () => launchAgent(sessions, 'custom')),
+    register('parful.launchAgentInWorktree', () =>
+      launchAgentInWorktree(sessions)
+    ),
     register('parful.adoptTerminal', () => adoptTerminal(sessions)),
     register('parful.splitCodex', (item?: SessionTreeItem) =>
       launchAgent(sessions, 'codex', sessionId(item))
@@ -144,6 +147,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     register('parful.startDebug', () =>
       vscode.commands.executeCommand('workbench.action.debug.selectandstart')
     ),
+    register('parful.openReviewLayout', () => openReviewLayout(sessions)),
     register('parful.runTask', () => runWorkspaceTask()),
     register('parful.openBrowser', () => openBrowser())
   );
@@ -195,13 +199,14 @@ function register(
 async function launchAgent(
   sessions: SessionManager,
   kind: AgentKind,
-  parentSessionId?: string
+  parentSessionId?: string,
+  cwdOverride?: string
 ): Promise<void> {
   if (!vscode.workspace.isTrusted) {
     void vscode.window.showWarningMessage('Trust this workspace before launching an agent.');
     return;
   }
-  const cwd = await pickWorkingDirectory();
+  const cwd = cwdOverride ?? (await pickWorkingDirectory());
   if (!cwd) {
     return;
   }
@@ -247,7 +252,10 @@ async function launchAgent(
   await sessions.launch(request);
 }
 
-async function chooseAndLaunchAgent(sessions: SessionManager): Promise<void> {
+async function chooseAndLaunchAgent(
+  sessions: SessionManager,
+  cwdOverride?: string
+): Promise<void> {
   const providers = [
       {
         label: 'Codex',
@@ -282,8 +290,63 @@ async function chooseAndLaunchAgent(sessions: SessionManager): Promise<void> {
     }
   );
   if (selected) {
-    await launchAgent(sessions, selected.agentKind);
+    await launchAgent(sessions, selected.agentKind, undefined, cwdOverride);
   }
+}
+
+async function launchAgentInWorktree(sessions: SessionManager): Promise<void> {
+  if (!vscode.workspace.isTrusted) {
+    void vscode.window.showWarningMessage(
+      'Trust this workspace before creating an agent worktree.'
+    );
+    return;
+  }
+  const source = await pickWorkingDirectory();
+  if (!source) {
+    return;
+  }
+  let repoRoot: string;
+  try {
+    repoRoot = (await runCommand('git', [
+      '-C', source, 'rev-parse', '--show-toplevel'
+    ])).trim();
+  } catch {
+    void vscode.window.showErrorMessage(
+      'The selected folder is not inside a Git repository.'
+    );
+    return;
+  }
+  const suffix = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 12);
+  const branch = await vscode.window.showInputBox({
+    title: 'New Agent Worktree Branch',
+    value: `parful/agent-${suffix}`,
+    validateInput: nonEmpty
+  });
+  if (!branch) {
+    return;
+  }
+  const target = await vscode.window.showInputBox({
+    title: 'New Agent Worktree Folder',
+    value: path.join(
+      path.dirname(repoRoot),
+      `${path.basename(repoRoot)}-${branch.replace(/[^a-z0-9._-]+/gi, '-')}`
+    ),
+    validateInput: nonEmpty
+  });
+  if (!target) {
+    return;
+  }
+  try {
+    await runCommand('git', [
+      '-C', repoRoot, 'worktree', 'add', '-b', branch, target
+    ]);
+  } catch (error) {
+    void vscode.window.showErrorMessage(
+      `Could not create the worktree: ${commandError(error)}`
+    );
+    return;
+  }
+  await chooseAndLaunchAgent(sessions, target);
 }
 
 async function splitSession(
@@ -536,6 +599,18 @@ async function runTestTask(): Promise<void> {
   }
 }
 
+async function openReviewLayout(sessions: SessionManager): Promise<void> {
+  await vscode.commands.executeCommand('vscode.setEditorLayout', {
+    orientation: 0,
+    groups: [{ size: 1 }, { size: 1 }]
+  });
+  const selected = sessions.selectedSession;
+  if (selected && sessions.isOpen(selected.id)) {
+    await sessions.focus(selected.id);
+  }
+  await vscode.commands.executeCommand('workbench.view.extension.parful');
+}
+
 async function executableAvailable(command: string): Promise<boolean> {
   const token = command.trim().match(/^(?:"([^"]+)"|'([^']+)'|(\S+))/);
   const executable = token?.[1] ?? token?.[2] ?? token?.[3];
@@ -558,4 +633,25 @@ async function executableAvailable(command: string): Promise<boolean> {
       (error) => resolve(!error)
     );
   });
+}
+
+function runCommand(command: string, args: readonly string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      command,
+      [...args],
+      { encoding: 'utf8', windowsHide: true },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(String(stderr).trim() || error.message));
+        } else {
+          resolve(String(stdout));
+        }
+      }
+    );
+  });
+}
+
+function commandError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

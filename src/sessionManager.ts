@@ -10,7 +10,7 @@ import {
   shellQuote,
   withCodexLifecycleIntegration
 } from './agentCommand';
-import { captureGitBaseline } from './gitReview';
+import { captureGitBaseline, listWorkspaceChanges } from './gitReview';
 import {
   createSession,
   isActiveSession,
@@ -367,6 +367,40 @@ export class SessionManager implements vscode.Disposable {
 
   public async close(id: string): Promise<void> {
     const terminal = this.terminals.get(id);
+    const session = this.sessions.get(id);
+    if (terminal && session) {
+      const running = isActiveSession(session);
+      let changeCount = 0;
+      if (session.baseline) {
+        try {
+          changeCount = (await listWorkspaceChanges(session.baseline)).length;
+        } catch {
+          // An unreadable Git state should not make a session impossible to remove.
+        }
+      }
+      if (running || changeCount > 0) {
+        const risks = [
+          ...(running ? ['its agent command is still running'] : []),
+          ...(changeCount > 0
+            ? [`its worktree has ${changeCount} unreviewed change${changeCount === 1 ? '' : 's'}`]
+            : [])
+        ];
+        const choice = await vscode.window.showWarningMessage(
+          `Remove ${session.label}? ${joinRisks(risks)}.`,
+          { modal: true },
+          'Review Changes',
+          'Remove Agent'
+        );
+        if (choice === 'Review Changes') {
+          this.selectSession(id);
+          await vscode.commands.executeCommand('workbench.view.extension.parful');
+          return;
+        }
+        if (choice !== 'Remove Agent') {
+          return;
+        }
+      }
+    }
     if (terminal) {
       this.terminals.delete(id);
       this.agentExecutions.delete(id);
@@ -719,6 +753,13 @@ export class SessionManager implements vscode.Disposable {
       await this.focus(id);
     }
   }
+}
+
+function joinRisks(risks: readonly string[]): string {
+  if (risks.length <= 1) {
+    return risks[0] ?? '';
+  }
+  return `${risks.slice(0, -1).join(', ')} and ${risks.at(-1)}`;
 }
 
 type HookAction =

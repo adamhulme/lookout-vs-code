@@ -93,6 +93,12 @@
         "category": "Parful"
       },
       {
+        "command": "parful.launchAgentInWorktree",
+        "title": "New Agent in Isolated Worktree…",
+        "category": "Parful",
+        "icon": "$(git-branch-create)"
+      },
+      {
         "command": "parful.splitCodex",
         "title": "Split with Codex",
         "category": "Parful"
@@ -245,6 +251,12 @@
         "icon": "$(debug-alt)"
       },
       {
+        "command": "parful.openReviewLayout",
+        "title": "Open Review Layout",
+        "category": "Parful",
+        "icon": "$(layout-two-columns)"
+      },
+      {
         "command": "parful.runTask",
         "title": "Run Workspace Task",
         "category": "Parful",
@@ -340,6 +352,11 @@
           "group": "navigation@3"
         },
         {
+          "command": "parful.launchAgentInWorktree",
+          "when": "view == parful.sessions",
+          "group": "navigation@4"
+        },
+        {
           "command": "parful.unmuteAttentionSound",
           "when": "view == parful.sessions && !parful.attentionSoundEnabled",
           "group": "navigation@4"
@@ -395,6 +412,11 @@
           "command": "parful.startDebug",
           "when": "view == parful.review",
           "group": "parful@3"
+        },
+        {
+          "command": "parful.openReviewLayout",
+          "when": "view == parful.review",
+          "group": "navigation@5"
         },
         {
           "command": "parful.closeSession",

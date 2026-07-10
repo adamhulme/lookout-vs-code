@@ -24,3 +24,6 @@
 - Document The Workshop as a separately released optional compatibility pack and record the staged deep-integration plan.
 - Add working-folder choice, guided executable checks, explicit adoption of unmanaged terminals, guarded restart, and late-event protection for closed terminals.
 - Add unread activity badge, attention-first status text, stateful sound controls, completion bells, provider enablement, and native Test Explorer/test/debug actions.
+- Surface running tasks/debug sessions, add a native two-column review layout, and refresh worktree branch state while agents remain open.
+- Guard agent removal when its command is running or its shared worktree has unreviewed changes.
+- Add an optional New Agent in Isolated Worktree flow with explicit branch and sibling-folder choices.

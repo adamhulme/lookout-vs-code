@@ -24,8 +24,9 @@ type ReviewKind =
   | 'worktree'
   | 'artifact-worktree'
   | 'diagnostic'
+  | 'runtime'
   | 'message';
-type ReviewGroup = 'changes' | 'diagnostics' | 'images' | 'plans';
+type ReviewGroup = 'changes' | 'diagnostics' | 'images' | 'plans' | 'runtime';
 
 interface ReviewTreeItemOptions {
   readonly group?: ReviewGroup;
@@ -39,6 +40,7 @@ interface ReviewTreeItemOptions {
   readonly worktreeKey?: string;
   readonly tooltip?: string;
   readonly warning?: boolean;
+  readonly command?: vscode.Command;
 }
 
 interface WorktreeChanges {
@@ -89,6 +91,16 @@ export class ReviewTreeItem extends vscode.TreeItem {
     if (kind === 'message') {
       this.description = options.description;
       this.iconPath = new vscode.ThemeIcon('info');
+      return;
+    }
+    if (kind === 'runtime') {
+      this.description = options.description;
+      this.iconPath = new vscode.ThemeIcon(
+        options.command?.command === 'workbench.view.debug'
+          ? 'debug-alt'
+          : 'pulse'
+      );
+      this.command = options.command;
       return;
     }
     if (kind === 'worktree' || kind === 'artifact-worktree') {
@@ -152,6 +164,7 @@ export class ReviewTreeProvider
   private readonly changesByWorktree = new Map<string, ReviewTreeItem[]>();
   private changeCount = 0;
   private diagnostics: ReviewTreeItem[] = [];
+  private runtime: ReviewTreeItem[] = [];
   private images: ReviewTreeItem[] = [];
   private plans: ReviewTreeItem[] = [];
   private planCount = 0;
@@ -161,6 +174,7 @@ export class ReviewTreeProvider
   private refreshGeneration = 0;
   private changeGeneration = 0;
   private refreshTimer: NodeJS.Timeout | undefined;
+  private worktreeRefreshTimer: NodeJS.Timeout | undefined;
   public readonly onDidChangeTreeData = this.changedEmitter.event;
   public readonly onDidChange = this.contentChangedEmitter.event;
 
@@ -182,6 +196,10 @@ export class ReviewTreeProvider
       sessions.onDidChangeTopology(() => this.scheduleRefresh()),
       vscode.workspace.onDidSaveTextDocument(() => void this.refreshChanges()),
       vscode.languages.onDidChangeDiagnostics(() => this.refreshDiagnostics()),
+      vscode.tasks.onDidStartTask(() => this.refreshRuntime()),
+      vscode.tasks.onDidEndTask(() => this.refreshRuntime()),
+      vscode.debug.onDidStartDebugSession(() => this.refreshRuntime()),
+      vscode.debug.onDidTerminateDebugSession(() => this.refreshRuntime()),
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (event.affectsConfiguration('parful.review')) {
           void this.refresh();
@@ -192,6 +210,11 @@ export class ReviewTreeProvider
 
   public async initialize(): Promise<void> {
     await this.refresh();
+    this.refreshRuntime();
+    this.worktreeRefreshTimer = setInterval(
+      () => void this.refreshChanges(),
+      10_000
+    );
   }
 
   public getTreeItem(element: ReviewTreeItem): vscode.TreeItem {
@@ -208,6 +231,10 @@ export class ReviewTreeProvider
         new ReviewTreeItem('group', 'Problems', {
           group: 'diagnostics',
           count: this.diagnostics.length
+        }),
+        new ReviewTreeItem('group', 'Running', {
+          group: 'runtime',
+          count: this.runtime.length
         }),
         new ReviewTreeItem('group', 'Plans & Docs', {
           group: 'plans',
@@ -247,6 +274,10 @@ export class ReviewTreeProvider
         return this.diagnostics;
       case 'plans':
         return this.plans;
+      case 'runtime':
+        return this.runtime.length > 0
+          ? this.runtime
+          : [new ReviewTreeItem('message', 'No tasks or debug sessions running')];
       default:
         return [];
     }
@@ -335,6 +366,35 @@ export class ReviewTreeProvider
     this.changedEmitter.fire();
   }
 
+  public refreshRuntime(): void {
+    const items: ReviewTreeItem[] = [];
+    const debugSession = vscode.debug.activeDebugSession;
+    if (debugSession) {
+      items.push(
+        new ReviewTreeItem('runtime', debugSession.name, {
+          description: `debug · ${debugSession.type}`,
+          command: {
+            command: 'workbench.view.debug',
+            title: 'Open Run and Debug'
+          }
+        })
+      );
+    }
+    for (const execution of vscode.tasks.taskExecutions) {
+      items.push(
+        new ReviewTreeItem('runtime', execution.task.name, {
+          description: `task · ${execution.task.source}`,
+          command: {
+            command: 'workbench.action.tasks.showTasks',
+            title: 'Show Running Tasks'
+          }
+        })
+      );
+    }
+    this.runtime = items;
+    this.changedEmitter.fire();
+  }
+
   public async open(item: ReviewTreeItem): Promise<void> {
     if (item.kind === 'change') {
       await this.openChange(item);
@@ -373,6 +433,9 @@ export class ReviewTreeProvider
   public dispose(): void {
     if (this.refreshTimer) {
       clearTimeout(this.refreshTimer);
+    }
+    if (this.worktreeRefreshTimer) {
+      clearInterval(this.worktreeRefreshTimer);
     }
     for (const watcher of this.watchers) {
       watcher.dispose();
@@ -772,6 +835,8 @@ function groupIcon(group: ReviewGroup | undefined): vscode.ThemeIcon {
       return new vscode.ThemeIcon('file-media');
     case 'diagnostics':
       return new vscode.ThemeIcon('warning');
+    case 'runtime':
+      return new vscode.ThemeIcon('pulse');
     default:
       return new vscode.ThemeIcon('notebook');
   }

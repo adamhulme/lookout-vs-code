@@ -55,17 +55,17 @@ launch several agents → work in VS Code → see attention/finish state → jum
 ## Then: deepen VS Code integration
 
 - [x] Add “Open Test Explorer” and native test-task/debug actions without recreating test discovery.
-- Surface active debug sessions and task state next to the selected agent where stable APIs allow it.
-- Add an optional “Review session” editor layout command using native editor groups.
-- Track repository/branch/worktree changes after launch and clearly show stale baselines.
+- [x] Surface active debug sessions and task state in Review using stable native APIs.
+- [x] Add an optional “Review session” editor layout command using native editor groups.
+- [x] Refresh repository/branch/worktree changes after launch and clearly show stale baselines.
 - Add a port/forwarded-port affordance using stable VS Code APIs when available.
 
 ## Then: isolated parallel work
 
-- Optional worktree creation when launching an agent.
+- [x] Optional isolated Git worktree creation when launching an agent.
 - Session templates: agent, model/profile, worktree policy, task/browser URL, and preferred review resources.
 - Workshop fleet-manifest state associated with isolated agents/worktrees without overstating attribution.
-- Safe close flow: running process → dirty worktree → review/keep/remove choices.
+- [x] Safe close flow: running process or dirty worktree → review/keep/remove choices.
 - Resume supported Codex/Claude sessions using provider-owned IDs.
 
 ## Then: scale and polish

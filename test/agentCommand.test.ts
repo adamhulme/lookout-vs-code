@@ -29,6 +29,14 @@ test('adds session-only Codex turn and delegated-agent lifecycle events', () => 
   assert.match(command, /hooks\.SubagentStop=/);
   assert.match(command, /hooks\.Stop=/);
   assert.match(command, /--hook codex background-start/);
+  assert.match(
+    command,
+    /hooks\.PreToolUse=\[\{ matcher = "\^Bash\$", .*--hook codex command-start/
+  );
+  assert.match(
+    command,
+    /hooks\.PostToolUse=\[\{ matcher = "\^Bash\$", .*--hook codex command-stop/
+  );
 });
 
 test('preserves explicit Codex notifier and hook overrides', () => {

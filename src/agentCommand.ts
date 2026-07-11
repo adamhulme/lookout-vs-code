@@ -45,6 +45,18 @@ export function withCodexLifecycleIntegration(
         'SubagentStop',
         hookCommand(helperPath, 'background-stop', undefined, platform)
       ),
+      // Surface long-running shell commands (builds, tests, dev servers). The
+      // matcher limits firing to the shell tool, whose canonical name is Bash.
+      codexHookOverride(
+        'PreToolUse',
+        hookCommand(helperPath, 'command-start', undefined, platform),
+        '^Bash$'
+      ),
+      codexHookOverride(
+        'PostToolUse',
+        hookCommand(helperPath, 'command-stop', undefined, platform),
+        '^Bash$'
+      ),
       codexHookOverride(
         'Stop',
         hookCommand(
@@ -107,8 +119,13 @@ function hasCodexHookOverride(command: string): boolean {
   );
 }
 
-function codexHookOverride(event: string, command: string): string {
-  return `hooks.${event}=[{ hooks = [{ type = "command", command = ${JSON.stringify(
+function codexHookOverride(
+  event: string,
+  command: string,
+  matcher?: string
+): string {
+  const matcherField = matcher ? `matcher = ${JSON.stringify(matcher)}, ` : '';
+  return `hooks.${event}=[{ ${matcherField}hooks = [{ type = "command", command = ${JSON.stringify(
     command
   )}, timeout = 10 }] }]`;
 }

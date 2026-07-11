@@ -41,14 +41,27 @@ async function main(): Promise<void> {
   const providerPayload = parseRecord(
     parsedArguments.payloadArgument || stdinMessage
   );
-  const body = JSON.stringify(
-    normalizeEvent(
-      sessionId,
-      parsedArguments.action,
-      parsedArguments.message,
-      providerPayload
-    )
+  const event = normalizeEvent(
+    sessionId,
+    parsedArguments.action,
+    parsedArguments.message,
+    providerPayload
   );
+
+  // PreToolUse/PostToolUse can fire for tools other than the shell (apply_patch,
+  // Edit, MCP calls) when a matcher lets them through. Those carry no command,
+  // so there is nothing to surface — acknowledge the hook and exit quietly.
+  if (
+    (event.kind === 'command-start' || event.kind === 'command-stop') &&
+    !event.command
+  ) {
+    if (parsedArguments.hookProvider === 'codex') {
+      process.stdout.write('{}\n');
+    }
+    return;
+  }
+
+  const body = JSON.stringify(event);
 
   await new Promise<void>((resolve, reject) => {
     const req = request(

@@ -30,7 +30,12 @@ export function withCodexLifecycleIntegration(
       ),
       codexHookOverride(
         'PermissionRequest',
-        hookCommand(helperPath, 'attention', 'Codex needs permission', platform)
+        hookCommand(
+          helperPath,
+          'running',
+          'Codex is checking authorization',
+          platform
+        )
       ),
       codexHookOverride(
         'SubagentStart',

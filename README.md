@@ -35,7 +35,13 @@ The default terminal location is the editor area. New terminals use the second e
 ```bash
 npm ci
 npm run check
+npm run test:integration
 ```
+
+The integration command launches an isolated VS Code Extension Development
+Host and exercises the core launch → attention → review → close loop. See
+[the testing guide](docs/TESTING.md) for the automated coverage and the small
+manual compatibility checklist that remains.
 
 Open this repository in VS Code, open **Run and Debug**, select **Run Lookout**, and press `F5`. A second Extension Development Host window opens. Select the **Lookout** activity-bar icon there and use **Lookout: Launch Codex Agent** or **Lookout: Launch Claude Code Agent**.
 

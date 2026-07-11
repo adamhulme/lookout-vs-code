@@ -3,7 +3,8 @@ Plan written 2026-07-10 against commit b43bfcb. Record results in
 docs/sessions/2026-07-10-smoke.md (one line per numbered item).
 
 Already verified automatically — do not re-test manually:
-  npm run check green (24 tests, 10 files); npm run vsix packages;
+  npm run check green (29 unit tests, 10 files); the extension-host suite
+  covers 6 core-loop cases on minimum and Stable VS Code; npm run vsix packages;
   zero multiTerm/paraterm/parapp remnants in code or manifest.
 
 SETUP (once)
@@ -47,7 +48,9 @@ C. LIFECYCLE, ATTENTION, AND THE BELL (~20 min — the heart of it)
      appears as designed (D8) — Lookout instructs, never bypasses.
      Before trusting, turn-complete attention still arrives via the
      notify fallback. After /hooks trust, full working / waiting /
-     permission events flow.
+     delegated-agent events flow. A PermissionRequest followed by an
+     automatic approval stays "checking authorization" and never claims
+     that Codex needs permission or rings the attention bell.
  12. Delegated agents: have Claude or Codex spawn a subagent -> row
      shows delegated-agent state. Foreground stop with a live child
      -> background, not waiting. Last child done + foreground stopped

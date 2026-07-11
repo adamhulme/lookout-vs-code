@@ -8,6 +8,15 @@
       "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
       "outFiles": ["${workspaceFolder}/out/**/*.js"],
       "preLaunchTask": "npm: compile"
+    },
+    {
+      "name": "Run Lookout Integration Tests",
+      "type": "extensionHost",
+      "request": "launch",
+      "testConfiguration": "${workspaceFolder}/.vscode-test.mjs",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
+      "outFiles": ["${workspaceFolder}/out/**/*.js"],
+      "preLaunchTask": "npm: compile"
     }
   ]
 }

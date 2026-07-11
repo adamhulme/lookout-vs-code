@@ -30,3 +30,5 @@
 - Make existing-terminal adoption discoverable from terminal context menus and the empty Agents view, reusing the shell-integration working directory when available.
 - Remove the redundant Focus Agent button from the Agents view toolbar; focus commands remain available from the Command Palette and keyboard navigation.
 - Rename the product and its full extension namespace from Parful to Lookout / `lookout.*` / `LOOKOUT_*` before the first Marketplace preview.
+- Add isolated extension-host integration tests for activation, terminal launch and splitting, authenticated attention routing, Git review baselines, and terminal closure on minimum and current VS Code.
+- Treat Codex's pre-review `PermissionRequest` hook as a neutral authorization check so automatic approvals do not produce false needs-permission alerts.

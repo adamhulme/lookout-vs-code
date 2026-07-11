@@ -15,7 +15,15 @@ import type { AgentKind, LaunchRequest } from './types';
 import { UsageManager } from './usageManager';
 import { UsageStatusBar, UsageTreeProvider } from './usageTree';
 
-export async function activate(context: vscode.ExtensionContext): Promise<void> {
+export interface LookoutExtensionTestApi {
+  readonly sessions: SessionManager;
+  readonly sessionTree: SessionTreeProvider;
+  readonly reviewTree: ReviewTreeProvider;
+}
+
+export async function activate(
+  context: vscode.ExtensionContext
+): Promise<LookoutExtensionTestApi | undefined> {
   const sessions = new SessionManager(context);
   context.subscriptions.push(sessions);
   await sessions.initialize();
@@ -176,6 +184,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   void reviewTree.initialize();
   usage.initialize();
+
+  return process.env.LOOKOUT_TEST === '1'
+    ? { sessions, sessionTree, reviewTree }
+    : undefined;
 }
 
 export function deactivate(): void {}

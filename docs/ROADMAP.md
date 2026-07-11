@@ -123,7 +123,8 @@ The decision-complete design is in [the opt-in Compound Engineering plan](plans/
 ## Then: scale and polish
 
 - Multi-root and Remote SSH/dev-container smoke matrix.
-- Extension-host integration tests on minimum and current VS Code, plus Windows and macOS CI legs for the platform-specific quoting/path branches.
+- [x] Extension-host integration tests on minimum and current VS Code for the core launch, attention, split, review, and close loop.
+- Add Windows and macOS CI legs for the platform-specific quoting/path branches.
 - Accessible icon polish, settings walkthrough, marketplace assets, and release automation.
 
 ## Then: Marketplace release (0.1, preview)

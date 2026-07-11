@@ -17,6 +17,14 @@ test('adds session-only Codex turn and delegated-agent lifecycle events', () => 
   assert.match(command, /hooks\.Stop=.*--hook codex turn-end/);
   assert.match(command, /hooks\.UserPromptSubmit=/);
   assert.match(command, /hooks\.PermissionRequest=/);
+  assert.match(
+    command,
+    /hooks\.PermissionRequest=.*--hook codex running.*Codex is checking authorization/
+  );
+  assert.doesNotMatch(
+    command,
+    /hooks\.PermissionRequest=.*--hook codex attention/
+  );
   assert.match(command, /hooks\.SubagentStart=/);
   assert.match(command, /hooks\.SubagentStop=/);
   assert.match(command, /hooks\.Stop=/);

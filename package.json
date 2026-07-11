@@ -55,13 +55,18 @@
     "clean": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\"",
     "lint": "eslint src test",
     "test": "npm run compile && node --test out/test/**/*.test.js",
+    "test:integration": "npm run compile && vscode-test --label integration --fail-zero --forbid-only",
     "check": "npm run lint && npm test",
+    "check:all": "npm run check && npm run test:integration",
     "vsix": "vsce package --no-dependencies"
   },
   "devDependencies": {
     "@eslint/js": "^9.31.0",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^24.0.13",
     "@types/vscode": "^1.96.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
     "@vscode/vsce": "^3.9.2",
     "eslint": "^9.31.0",
     "typescript": "^5.8.3",
@@ -468,7 +473,7 @@
         "lookout.codex.lifecycleIntegration": {
           "type": "boolean",
           "default": true,
-          "description": "Add session-only Codex lifecycle hooks and a turn-complete fallback so Lookout can distinguish working, delegated agents, permission prompts, and a finished turn. Codex requires one-time review through /hooks."
+          "description": "Add session-only Codex lifecycle hooks and a turn-complete fallback so Lookout can distinguish working, delegated agents, authorization checks, and a finished turn. Codex requires one-time review through /hooks."
         },
         "lookout.claude.command": {
           "type": "string",

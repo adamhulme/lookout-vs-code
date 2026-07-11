@@ -344,7 +344,7 @@
         {
           "command": "lookout.muteAttentionSound",
           "when": "view == lookout.sessions && lookout.attentionSoundEnabled",
-          "group": "navigation@4"
+          "group": "navigation@5"
         },
         {
           "command": "lookout.adoptTerminal",
@@ -359,12 +359,12 @@
         {
           "command": "lookout.unmuteAttentionSound",
           "when": "view == lookout.sessions && !lookout.attentionSoundEnabled",
-          "group": "navigation@4"
+          "group": "navigation@5"
         },
         {
           "command": "lookout.configureAttentionSound",
           "when": "view == lookout.sessions",
-          "group": "navigation@5"
+          "group": "navigation@6"
         },
         {
           "command": "lookout.openBrowser",

@@ -7,6 +7,7 @@ import type {
   ForegroundState,
   RunningCommand
 } from './types';
+import { normalizeProviderSessionState } from './providerSessionBinding';
 
 const MAX_RUNNING_COMMANDS = 12;
 
@@ -16,6 +17,10 @@ export function applyAgentEvent(
   now = Date.now()
 ): AgentSession {
   switch (event.kind) {
+    case 'provider-session':
+      // Provider identity is bound by SessionManager before activity is
+      // reduced. The identity event itself does not imply working or waiting.
+      return session;
     case 'status':
       return applyStatusEvent(session, event.status, event.message, event.exitCode, now);
     case 'foreground-stop':
@@ -32,7 +37,7 @@ export function applyAgentEvent(
 }
 
 export function normalizeSessionActivity(session: AgentSession): AgentSession {
-  return {
+  return normalizeProviderSessionState({
     ...session,
     backgroundAgents: Array.isArray(session.backgroundAgents)
       ? session.backgroundAgents.filter(isBackgroundAgent)
@@ -43,7 +48,7 @@ export function normalizeSessionActivity(session: AgentSession): AgentSession {
     foregroundState: isForegroundState(session.foregroundState)
       ? session.foregroundState
       : 'unknown'
-  };
+  });
 }
 
 function applyStatusEvent(

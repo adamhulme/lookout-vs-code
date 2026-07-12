@@ -14,8 +14,14 @@ its UI:
 - Git repository, branch, and launch-commit metadata used for review baselines;
 - configured Codex and Claude launch commands (custom-agent commands are not
   persisted);
-- brief provider lifecycle messages and currently running shell-command labels.
-  By default it never retains command output. If you globally opt in to
+- provider-owned session identifiers received through documented authenticated
+  hooks, plus bounded operational event kinds and fixed summaries used for
+  session continuity and unread history. Lookout does not read the associated
+  provider transcript paths;
+- currently running shell-command labels in memory only. They are cleared from
+  persisted snapshots because commands may contain sensitive arguments and are
+  no longer current after restoration. By default Lookout never retains command
+  output. If you globally opt in to
   `lookout.review.captureCommandOutput`, Lookout keeps up to 8 KiB from each
   completed Codex or Claude shell-tool result in memory only, until the window
   reloads or session closes; it never reads terminal scrollback or persists
@@ -24,6 +30,14 @@ its UI:
   hooks;
 - recent Claude usage-limit snapshots and whether the one-time Codex hook notice
   has been acknowledged.
+
+The explicit **Export Sanitized Support Bundle** command writes only versioned,
+allow-listed health codes, status totals, product versions, a coarse
+local/WSL/SSH/container host kind, and primitive feature states to the file you
+choose. It omits free-form health messages and defensively removes home and
+workspace paths, provider and Lookout IDs, commands, URLs and endpoint details,
+auth material, prompts, transcripts, events, and output. No support bundle is
+created or uploaded automatically.
 
 The extension's global storage can also contain a generated Claude settings
 file for session-local hooks and generated WAV files for the attention bell.
@@ -50,7 +64,8 @@ proxy or inspect their network traffic.
 
 You can disable either provider, its lifecycle integration, its usage provider,
 notifications, sounds, or optional image discovery in VS Code Settings. Removing
-an agent from the Agents view removes its persisted session row. VS Code manages
+an agent from the Agents view removes its persisted session row and Lookout event
+history. It does not remove provider-owned session history. VS Code manages
 the remaining extension storage as part of the installed extension profile.
 
 Questions or privacy reports can be filed through the support channels in

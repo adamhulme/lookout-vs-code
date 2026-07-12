@@ -1,6 +1,11 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import type { SessionEvent } from './sessionEvents';
 import type { SessionManager } from './sessionManager';
+import {
+  operationalStatsTooltipLines,
+  sessionOperationalStats
+} from './sessionStats';
 import type { AgentSession, SessionStatus } from './types';
 
 const STATUS_ICONS: Record<SessionStatus, vscode.ThemeIcon> = {
@@ -17,8 +22,12 @@ const STATUS_ICONS: Record<SessionStatus, vscode.ThemeIcon> = {
 };
 
 export class SessionTreeItem extends vscode.TreeItem {
-  public constructor(public readonly session: AgentSession) {
+  public constructor(
+    public readonly session: AgentSession,
+    events: readonly SessionEvent[] = []
+  ) {
     super(session.label, vscode.TreeItemCollapsibleState.None);
+    const stats = sessionOperationalStats(session, events);
     this.id = session.id;
     this.contextValue = 'lookout.session';
     this.description = sessionDescription(session);
@@ -28,10 +37,22 @@ export class SessionTreeItem extends vscode.TreeItem {
       `Status: ${session.status}`,
       `Directory: ${session.cwd}`,
       ...(session.baseline ? [`Branch: ${session.baseline.branch}`] : []),
-      `Delegated agents: ${session.backgroundAgents.length}`,
-      ...session.backgroundAgents.map((agent) => `  • ${agent.label}`),
       `Attention bridge: ${session.bridgeAvailable ? 'connected' : 'unavailable'}`,
-      ...(session.latestEvent ? [`Latest: ${session.latestEvent}`] : [])
+      `Lifecycle integration: ${integrationLabel(session.integration.lifecycle)}`,
+      ...(session.providerSessions.at(-1)
+        ? [
+            'Provider session: observed',
+            `Provider identity last seen: ${new Date(
+              session.providerSessions.at(-1)?.lastSeenAt ?? 0
+            ).toLocaleString()}`
+          ]
+        : session.kind === 'custom'
+          ? ['Provider session: not applicable']
+          : ['Provider session: awaiting first hook event']),
+      ...(session.integration.conflict
+        ? ['Integration warning: provider session identity conflict']
+        : []),
+      ...operationalStatsTooltipLines(stats)
     ].join('\n');
     this.iconPath = STATUS_ICONS[session.status];
     this.command = {
@@ -42,6 +63,25 @@ export class SessionTreeItem extends vscode.TreeItem {
     this.accessibilityInformation = {
       label: `${session.label}, ${session.status}${session.unread ? ', unread' : ''}`
     };
+  }
+}
+
+function integrationLabel(
+  lifecycle: AgentSession['integration']['lifecycle']
+): string {
+  switch (lifecycle) {
+    case 'disabled':
+      return 'disabled or terminal-only';
+    case 'bridge-unavailable':
+      return 'bridge unavailable';
+    case 'injection-skipped':
+      return 'hooks unavailable for this launch command or shell';
+    case 'awaiting-first-hook':
+      return 'awaiting first trusted hook event';
+    case 'healthy':
+      return 'healthy';
+    case 'stale':
+      return 'degraded';
   }
 }
 
@@ -61,7 +101,12 @@ export class SessionTreeProvider
   }
 
   public getChildren(): SessionTreeItem[] {
-    return this.manager.list().map((session) => new SessionTreeItem(session));
+    return this.manager
+      .list()
+      .map(
+        (session) =>
+          new SessionTreeItem(session, this.manager.eventsFor(session.id))
+      );
   }
 
   public refresh(): void {
@@ -126,7 +171,32 @@ export class SessionStatusBar implements vscode.Disposable {
 function sessionDescription(session: AgentSession): string {
   const directory = path.basename(session.cwd);
   const unread = session.unread ? '● ' : '';
-  const detail = session.latestEvent ?? session.status;
+  const detail = statusLabel(session.status);
   const branch = session.baseline?.branch ? ` · ${session.baseline.branch}` : '';
   return `${unread}${directory}${branch} · ${detail}`;
+}
+
+function statusLabel(status: SessionStatus): string {
+  switch (status) {
+    case 'starting':
+      return 'starting';
+    case 'active':
+      return 'active';
+    case 'running':
+      return 'working';
+    case 'background':
+      return 'delegated work active';
+    case 'attention':
+      return 'needs attention';
+    case 'idle':
+      return 'turn finished';
+    case 'completed':
+      return 'completed';
+    case 'failed':
+      return 'failed';
+    case 'unknown':
+      return 'unknown';
+    case 'closed':
+      return 'closed';
+  }
 }

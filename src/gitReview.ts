@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process';
 import * as path from 'node:path';
+import { runGitText } from './gitProcess';
 import type { GitBaseline } from './types';
 
 export type WorkspaceChangeKind =
@@ -45,12 +45,12 @@ export async function readGitWorktreeState(
   cwd: string
 ): Promise<GitWorktreeState> {
   const repoRoot = path.normalize(
-    (await runGit(cwd, ['rev-parse', '--show-toplevel'])).trim()
+    (await runGitText(cwd, ['rev-parse', '--show-toplevel'])).trim()
   );
   const [commit, branch, commonDirectoryValue] = await Promise.all([
-    runGit(repoRoot, ['rev-parse', 'HEAD']),
-    runGit(repoRoot, ['rev-parse', '--abbrev-ref', 'HEAD']),
-    runGit(repoRoot, ['rev-parse', '--git-common-dir'])
+    runGitText(repoRoot, ['rev-parse', 'HEAD']),
+    runGitText(repoRoot, ['rev-parse', '--abbrev-ref', 'HEAD']),
+    runGitText(repoRoot, ['rev-parse', '--git-common-dir'])
   ]);
   const commonDirectory = path.normalize(commonDirectoryValue.trim());
   const commonPath = path.isAbsolute(commonDirectory)
@@ -87,7 +87,7 @@ async function listChangesSince(
   revision: string
 ): Promise<WorkspaceChange[]> {
   const [tracked, untracked] = await Promise.all([
-    runGit(repoRoot, [
+    runGitText(repoRoot, [
       'diff',
       '--name-status',
       '-z',
@@ -96,7 +96,7 @@ async function listChangesSince(
       revision,
       '--'
     ]),
-    runGit(repoRoot, [
+    runGitText(repoRoot, [
       'ls-files',
       '--others',
       '--exclude-standard',
@@ -119,7 +119,7 @@ export async function readBaselineFile(
   relativePath: string
 ): Promise<string> {
   const normalized = relativePath.split(path.sep).join('/');
-  return runGit(baseline.repoRoot, [
+  return runGitText(baseline.repoRoot, [
     'show',
     `${baseline.commit}:${normalized}`
   ]);
@@ -201,27 +201,4 @@ function changeKind(status: string): WorkspaceChangeKind {
 function normalizeFsPath(filePath: string): string {
   const resolved = path.resolve(filePath);
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
-}
-
-function runGit(cwd: string, args: readonly string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      'git',
-      ['-C', cwd, ...args],
-      {
-        encoding: 'utf8',
-        maxBuffer: 16 * 1024 * 1024,
-        // Background polling must never contend with an agent's own git
-        // commands over the optional index locks.
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
-      },
-      (error, stdout) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve(String(stdout));
-        }
-      }
-    );
-  });
 }

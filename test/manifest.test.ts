@@ -16,6 +16,10 @@ interface Manifest {
   readonly contributes?: {
     readonly commands?: ManifestCommand[];
     readonly viewsWelcome?: Array<{ readonly when?: string }>;
+    readonly walkthroughs?: Array<{
+      readonly id?: string;
+      readonly steps?: Array<{ readonly id?: string }>;
+    }>;
     readonly configuration?: {
       readonly properties?: Record<string, { readonly scope?: string; readonly default?: unknown }>;
     };
@@ -51,11 +55,15 @@ test('disables command-launching contributions outside trusted workspaces', () =
     'lookout.launchClaude',
     'lookout.launchCustom',
     'lookout.launchAgentInWorktree',
+    'lookout.launchTemplate',
     'lookout.adoptTerminal',
     'lookout.splitSession',
     'lookout.restartSession',
+    'lookout.resumeSession',
+    'lookout.forkSession',
     'lookout.runTask',
     'lookout.runTestTask',
+    'lookout.runVerification',
     'lookout.startDebug'
   ]) {
     assert.equal(
@@ -78,4 +86,19 @@ test('keeps command-output capture globally opt-in', () => {
   ];
   assert.equal(setting?.default, false);
   assert.equal(setting?.scope, 'application');
+});
+
+test('launches agents in the native terminal panel by default', () => {
+  const setting = manifest.contributes?.configuration?.properties?.[
+    'lookout.terminals.location'
+  ];
+  assert.equal(setting?.default, 'panel');
+});
+
+test('ships a passive getting-started walkthrough', () => {
+  const walkthrough = manifest.contributes?.walkthroughs?.find(
+    (candidate) => candidate.id === 'lookout.gettingStarted'
+  );
+  assert.ok(walkthrough);
+  assert.ok((walkthrough.steps?.length ?? 0) >= 4);
 });

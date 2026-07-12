@@ -18,6 +18,7 @@ test('adds session-only Codex turn and delegated-agent lifecycle events', () => 
   assert.match(command, /features\.hooks=true/);
   assert.match(command, /hooks\.Stop=.*--hook codex turn-end/);
   assert.match(command, /hooks\.UserPromptSubmit=/);
+  assert.match(command, /hooks\.SessionStart=/);
   assert.match(command, /hooks\.PermissionRequest=/);
   assert.match(
     command,

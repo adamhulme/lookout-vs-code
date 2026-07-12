@@ -24,6 +24,22 @@ import {
   applyAgentEvent,
   normalizeSessionActivity
 } from './sessionActivity';
+import {
+  appendSessionEvent,
+  eventFromAgentEvent,
+  markSessionEventsRead,
+  removeSessionEvents,
+  type EventLedger,
+  type SessionEvent,
+  type SessionEventKind,
+  type SessionEventSource
+} from './sessionEvents';
+import { SessionStore } from './sessionStore';
+import {
+  bindProviderSession,
+  providerSessionCollision
+} from './providerSessionBinding';
+import { providerFor } from './providers/providerRegistry';
 import type {
   AgentEvent,
   AgentReportedStatus,
@@ -33,7 +49,6 @@ import type {
 } from './types';
 import type { UsageBridgeEvent } from './usageTypes';
 
-const STORAGE_KEY = 'lookout.sessions.v1';
 const BRIDGE_STORAGE_KEY = 'lookout.attentionEndpoint.v1';
 const CODEX_HOOK_NOTICE_KEY = 'lookout.codexHookNotice.v1';
 const MAX_COMMAND_RESULTS_PER_SESSION = 12;
@@ -42,6 +57,7 @@ export class SessionManager implements vscode.Disposable {
   private readonly sessions = new Map<string, AgentSession>();
   private readonly commandResults = new Map<string, CommandResult[]>();
   private commandResultSequence = 0;
+  private eventLedger: EventLedger = { nextSequence: 1, events: [] };
   private readonly terminals = new Map<string, vscode.Terminal>();
   private readonly agentExecutions = new Map<
     string,
@@ -61,6 +77,7 @@ export class SessionManager implements vscode.Disposable {
   private attentionEndpoint: AttentionEndpoint | undefined;
   private bridgeWarningShown = false;
   private readonly attentionSound: AttentionSound;
+  private readonly sessionStore: SessionStore;
 
   public readonly onDidChange = this.changedEmitter.event;
   public readonly onDidChangeTopology = this.topologyEmitter.event;
@@ -69,6 +86,7 @@ export class SessionManager implements vscode.Disposable {
 
   public constructor(private readonly context: vscode.ExtensionContext) {
     this.attentionSound = new AttentionSound(context);
+    this.sessionStore = new SessionStore(context.workspaceState);
   }
 
   public async initialize(): Promise<void> {
@@ -86,7 +104,12 @@ export class SessionManager implements vscode.Disposable {
     } catch {
       this.attentionEndpoint = undefined;
     }
-    const stored = this.context.workspaceState.get<AgentSession[]>(STORAGE_KEY, []);
+    const persisted = await this.sessionStore.load();
+    const stored = persisted.sessions;
+    this.eventLedger = {
+      nextSequence: persisted.nextSequence,
+      events: persisted.events
+    };
     const terminalsByName = new Map(
       vscode.window.terminals.map((terminal) => [terminal.name, terminal])
     );
@@ -99,9 +122,6 @@ export class SessionManager implements vscode.Disposable {
     }
 
     for (const saved of stored) {
-      if (!isPersistedSession(saved)) {
-        continue;
-      }
       const normalizedSaved = normalizeSessionActivity(saved);
       const terminal =
         terminalsBySessionId.get(saved.id) ?? terminalsByName.get(saved.terminalName);
@@ -121,6 +141,12 @@ export class SessionManager implements vscode.Disposable {
             unread: demoteStale ? false : normalizedSaved.unread,
             bridgeAvailable:
               bridgeReused && normalizedSaved.bridgeAvailable === true,
+            integration: !bridgeReused
+              ? {
+                  ...normalizedSaved.integration,
+                  lifecycle: 'bridge-unavailable'
+                }
+              : normalizedSaved.integration,
             ...(!bridgeReused
               ? {
                   backgroundAgents: [],
@@ -149,12 +175,20 @@ export class SessionManager implements vscode.Disposable {
       }
     }
     this.selectedSessionId =
-      stored.find((session) => this.terminals.has(session.id))?.id ?? stored[0]?.id;
+      stored.find(
+        (session) => !session.archivedAt && this.terminals.has(session.id)
+      )?.id ?? stored.find((session) => !session.archivedAt)?.id;
 
     this.disposables.push(
       vscode.window.onDidStartTerminalShellExecution((event) => {
         const id = this.sessionIdsByTerminal.get(event.terminal);
         if (id && this.agentExecutions.get(id) === event.execution) {
+          this.recordEvent(
+            id,
+            'terminal-active',
+            'terminal',
+            'Agent terminal command started'
+          );
           this.updateSession(id, 'active', undefined, 'Agent session active');
         }
       }),
@@ -174,6 +208,17 @@ export class SessionManager implements vscode.Disposable {
             : failed
               ? 'agent failed'
               : 'agent finished';
+        this.recordEvent(
+          id,
+          'terminal-exited',
+          'terminal',
+          exitCode === undefined
+            ? 'Agent terminal command ended with unknown status'
+            : failed
+              ? 'Agent terminal command failed'
+              : 'Agent terminal command completed',
+          'notice'
+        );
         this.updateSession(
           id,
           status,
@@ -213,6 +258,13 @@ export class SessionManager implements vscode.Disposable {
         this.commandResults.delete(id);
         this.sessionIdsByTerminal.delete(terminal);
         this.topologyEmitter.fire();
+        this.recordEvent(
+          id,
+          'terminal-closed',
+          'terminal',
+          'Agent terminal closed',
+          'notice'
+        );
         this.updateSession(id, 'closed', terminal.exitStatus?.code, 'Terminal closed');
       }),
       vscode.window.onDidChangeActiveTerminal((terminal) => {
@@ -242,6 +294,10 @@ export class SessionManager implements vscode.Disposable {
     // Sort by createdAt (immutable) so sessions keep a stable position.
     // Sorting by updatedAt made agents jump around the list every time they
     // emitted an event.
+    return this.history().filter((session) => session.archivedAt === undefined);
+  }
+
+  public history(): readonly AgentSession[] {
     return [...this.sessions.values()].sort((a, b) => a.createdAt - b.createdAt);
   }
 
@@ -251,6 +307,12 @@ export class SessionManager implements vscode.Disposable {
 
   public commandResultsFor(id: string): readonly CommandResult[] {
     return this.commandResults.get(id) ?? [];
+  }
+
+  public eventsFor(id?: string): readonly SessionEvent[] {
+    return id
+      ? this.eventLedger.events.filter((event) => event.sessionId === id)
+      : this.eventLedger.events;
   }
 
   public get activeCount(): number {
@@ -273,14 +335,27 @@ export class SessionManager implements vscode.Disposable {
 
   public async launch(request: LaunchRequest): Promise<AgentSession> {
     const baseline = await captureGitBaseline(request.cwd);
+    const created = createSession(
+      request.kind,
+      request.label,
+      request.command,
+      request.cwd
+    );
     const session: AgentSession = {
-      ...createSession(
-        request.kind,
-        request.label,
-        request.command,
-        request.cwd
-      ),
+      ...created,
       bridgeAvailable: this.attentionEndpoint !== undefined,
+      ...(request.providerCommand
+        ? { providerCommand: request.providerCommand }
+        : {}),
+      ...(request.lineage ? { lineage: request.lineage } : {}),
+      ...(request.expectedProviderSessionId
+        ? {
+            integration: {
+              ...created.integration,
+              expectedProviderSessionId: request.expectedProviderSessionId
+            }
+          }
+        : {}),
       ...(baseline ? { baseline } : {})
     };
     const parentTerminal = request.parentSessionId
@@ -288,7 +363,7 @@ export class SessionManager implements vscode.Disposable {
       : undefined;
     const configuredLocation = vscode.workspace
       .getConfiguration('lookout')
-      .get<'editor' | 'panel'>('terminals.location', 'editor');
+      .get<'editor' | 'panel'>('terminals.location', 'panel');
     const endpoint = this.attentionEndpoint;
     const location: vscode.TerminalOptions['location'] = parentTerminal
       ? { parentTerminal }
@@ -304,6 +379,22 @@ export class SessionManager implements vscode.Disposable {
       request,
       classifyShell(vscode.env.shell)
     );
+    const lifecycleEnabled =
+      request.kind === 'codex' || request.kind === 'claude'
+        ? vscode.workspace
+            .getConfiguration(`lookout.${request.kind}`)
+            .get('lifecycleIntegration', true)
+        : false;
+    session.integration =
+      request.kind === 'custom'
+        ? { lifecycle: 'disabled', hookTrust: 'not-applicable' }
+        : !lifecycleEnabled
+          ? { lifecycle: 'disabled', hookTrust: 'not-applicable' }
+        : !endpoint
+          ? { lifecycle: 'bridge-unavailable', hookTrust: 'unknown' }
+          : launched.integrationsSkipped
+            ? { lifecycle: 'injection-skipped', hookTrust: 'unknown' }
+            : session.integration;
     const terminal = vscode.window.createTerminal({
       name: session.terminalName,
       cwd: vscode.Uri.file(request.cwd),
@@ -332,6 +423,12 @@ export class SessionManager implements vscode.Disposable {
       }
     });
     this.sessions.set(session.id, session);
+    this.recordEvent(
+      session.id,
+      'session-created',
+      'user',
+      'Agent session created'
+    );
     this.attachTerminal(session.id, terminal);
     this.topologyEmitter.fire();
     this.selectSession(session.id);
@@ -372,6 +469,7 @@ export class SessionManager implements vscode.Disposable {
       ...created,
       status: 'active',
       bridgeAvailable: false,
+      integration: { lifecycle: 'disabled', hookTrust: 'not-applicable' },
       // Keep the real terminal name: adopted terminals carry no session-ID
       // environment marker, so the name is the only way to re-attach them
       // after a window reload.
@@ -380,6 +478,12 @@ export class SessionManager implements vscode.Disposable {
       ...(baseline ? { baseline } : {})
     };
     this.sessions.set(session.id, session);
+    this.recordEvent(
+      session.id,
+      'session-adopted',
+      'user',
+      'Terminal adopted as an agent session'
+    );
     this.attachTerminal(session.id, terminal);
     this.topologyEmitter.fire();
     this.selectSession(session.id);
@@ -398,6 +502,150 @@ export class SessionManager implements vscode.Disposable {
     terminal.show(false);
   }
 
+  public stageText(id: string, value: string): boolean {
+    const terminal = this.terminals.get(id);
+    if (!terminal || !value.trim()) {
+      return false;
+    }
+    terminal.show(false);
+    terminal.sendText(value, false);
+    return true;
+  }
+
+  public async continueProviderSession(
+    id: string,
+    operation: 'resume' | 'fork'
+  ): Promise<AgentSession | undefined> {
+    if (!vscode.workspace.isTrusted) {
+      void vscode.window.showWarningMessage(
+        'Trust this workspace before resuming or forking an agent session.'
+      );
+      return undefined;
+    }
+    const source = this.sessions.get(id);
+    const reference = source?.providerSessions.at(-1);
+    if (!source || !reference || source.kind === 'custom') {
+      void vscode.window.showWarningMessage(
+        'This agent has no provider session identity that Lookout can continue.'
+      );
+      return undefined;
+    }
+
+    const collision = providerSessionCollision(
+      this.history(),
+      '__new-session__',
+      reference.provider,
+      reference.id,
+      (sessionId) => this.isOpen(sessionId)
+    );
+    if (operation === 'resume' && collision) {
+      const choice = await vscode.window.showWarningMessage(
+        `${collision.label} already has this provider session open. Resume would attach two terminals to one provider history.`,
+        { modal: true },
+        'Focus Existing',
+        'Fork Instead'
+      );
+      if (choice === 'Focus Existing') {
+        await this.focus(collision.id);
+        return undefined;
+      }
+      if (choice === 'Fork Instead') {
+        return this.continueProviderSession(id, 'fork');
+      }
+      return undefined;
+    }
+
+    const adapter = providerFor(source.kind);
+    const continuation =
+      operation === 'resume'
+        ? adapter.buildResume({
+            configuredCommand: source.providerCommand ?? source.command,
+            providerSessionId: reference.id,
+            shell: classifyShell(vscode.env.shell)
+          })
+        : adapter.buildFork({
+            configuredCommand: source.providerCommand ?? source.command,
+            providerSessionId: reference.id,
+            shell: classifyShell(vscode.env.shell)
+          });
+    if (!continuation.available || !continuation.command) {
+      void vscode.window.showWarningMessage(
+        continuation.reason ?? `${adapter.displayName} continuation is unavailable.`
+      );
+      return undefined;
+    }
+    const choice = await vscode.window.showInformationMessage(
+      `${operation === 'resume' ? 'Resume' : 'Fork'} ${source.label} in ${source.cwd}?\n\n${continuation.command}`,
+      { modal: true },
+      operation === 'resume' ? 'Resume Agent' : 'Fork Agent'
+    );
+    if (!choice) {
+      return undefined;
+    }
+    return this.launch({
+      kind: source.kind,
+      label: `${source.label} ${operation === 'resume' ? 'resumed' : 'fork'}`,
+      command: continuation.command,
+      providerCommand: source.providerCommand ?? source.command,
+      cwd: source.cwd,
+      lineage: {
+        operation,
+        sourceLookoutSessionId: source.id,
+        sourceProviderSessionId: reference.id
+      },
+      ...(operation === 'resume'
+        ? { expectedProviderSessionId: reference.id }
+        : {})
+    });
+  }
+
+  public async archiveSession(id: string): Promise<void> {
+    const session = this.sessions.get(id);
+    if (!session || session.archivedAt !== undefined) {
+      return;
+    }
+    if (this.isOpen(id)) {
+      void vscode.window.showWarningMessage(
+        'Close the agent terminal before archiving its Lookout history.'
+      );
+      return;
+    }
+    session.archivedAt = Date.now();
+    session.updatedAt = session.archivedAt;
+    if (this.selectedSessionId === id) {
+      const next = this.list().find((candidate) => this.isOpen(candidate.id));
+      this.selectedSessionId = next?.id;
+      this.selectedEmitter.fire(next);
+    }
+    await this.persistAndNotify();
+  }
+
+  public async unarchiveSession(id: string): Promise<void> {
+    const session = this.sessions.get(id);
+    if (!session?.archivedAt) {
+      return;
+    }
+    delete session.archivedAt;
+    session.updatedAt = Date.now();
+    await this.persistAndNotify();
+  }
+
+  public async deleteClosedHistory(): Promise<number> {
+    const removable = this.history().filter(
+      (session) =>
+        !this.isOpen(session.id) &&
+        (session.archivedAt !== undefined || session.status === 'closed')
+    );
+    for (const session of removable) {
+      this.sessions.delete(session.id);
+      this.eventLedger = removeSessionEvents(this.eventLedger, session.id);
+    }
+    if (removable.length > 0) {
+      await this.persistAndNotify();
+    }
+    return removable.length;
+  }
+
   public async focusNextAttention(): Promise<void> {
     // Only sessions with an open terminal can be focused; a closed session
     // must not become a dead end that hides the next real candidate.
@@ -410,6 +658,31 @@ export class SessionManager implements vscode.Disposable {
       return;
     }
     await this.focus(session.id);
+  }
+
+  public async focusAdjacentUnread(direction: 1 | -1): Promise<void> {
+    const unread = this.eventLedger.events
+      .filter(
+        (event) =>
+          event.readAt === undefined &&
+          event.attention !== 'none' &&
+          this.isOpen(event.sessionId)
+      )
+      .sort((left, right) => left.sequence - right.sequence);
+    if (unread.length === 0) {
+      void vscode.window.showInformationMessage('No unread agent events.');
+      return;
+    }
+    const currentIndex = unread.findIndex(
+      (event) => event.sessionId === this.selectedSessionId
+    );
+    const nextIndex =
+      currentIndex < 0
+        ? direction === 1
+          ? 0
+          : unread.length - 1
+        : (currentIndex + direction + unread.length) % unread.length;
+    await this.focus(unread[nextIndex].sessionId);
   }
 
   public async focusAdjacent(direction: 1 | -1): Promise<void> {
@@ -476,6 +749,7 @@ export class SessionManager implements vscode.Disposable {
       terminal.dispose();
     }
     this.commandResults.delete(id);
+    this.eventLedger = removeSessionEvents(this.eventLedger, id);
     if (!this.sessions.delete(id)) {
       return;
     }
@@ -543,6 +817,7 @@ export class SessionManager implements vscode.Disposable {
     }
     session.label = label.trim();
     session.updatedAt = Date.now();
+    this.recordEvent(id, 'session-renamed', 'user', 'Agent session renamed');
     await this.persistAndNotify();
   }
 
@@ -625,10 +900,15 @@ export class SessionManager implements vscode.Disposable {
 
   private markRead(id: string): void {
     const session = this.sessions.get(id);
-    if (!session?.unread) {
+    const marked = markSessionEventsRead(this.eventLedger, id);
+    const eventsChanged = marked !== this.eventLedger;
+    this.eventLedger = marked;
+    if (!session?.unread && !eventsChanged) {
       return;
     }
-    this.sessions.set(id, markSessionRead(session));
+    if (session?.unread) {
+      this.sessions.set(id, markSessionRead(session));
+    }
     void this.persistAndNotify();
   }
 
@@ -692,7 +972,54 @@ export class SessionManager implements vscode.Disposable {
     if (!session || !this.terminals.has(event.sessionId)) {
       return;
     }
-    let updated = applyAgentEvent(session, event);
+    const providerSessionId = event.providerSessionId;
+    const provider = event.provider;
+    const collision =
+      provider && providerSessionId
+        ? providerSessionCollision(
+            this.list(),
+            event.sessionId,
+            provider,
+            providerSessionId,
+            (id) => this.isOpen(id)
+          )
+        : undefined;
+    const binding = collision
+      ? {
+          session: {
+            ...session,
+            integration: {
+              ...session.integration,
+              lifecycle: 'stale' as const,
+              lastHookAt: Date.now(),
+              conflict: `Provider session is already open as ${collision.label}`
+            }
+          },
+          changed: true,
+          conflict: `Provider session is already open as ${collision.label}`
+        }
+      : bindProviderSession(session, event);
+    let updated = applyAgentEvent(binding.session, event);
+    this.eventLedger = appendSessionEvent(
+      this.eventLedger,
+      eventFromAgentEvent(event)
+    );
+    const identityChanged =
+      providerSessionId !== undefined &&
+      session.providerSessions.at(-1)?.id !== providerSessionId;
+    if ((binding.conflict || identityChanged) && providerSessionId) {
+      this.recordEvent(
+        event.sessionId,
+        binding.conflict ? 'identity-conflict' : 'identity-observed',
+        'provider-hook',
+        binding.conflict
+          ? 'Provider session identity conflict'
+          : 'Provider session identity observed',
+        binding.conflict ? 'action' : 'none',
+        provider,
+        providerSessionId
+      );
+    }
     if (
       event.kind === 'command-stop' &&
       event.result &&
@@ -754,15 +1081,38 @@ export class SessionManager implements vscode.Disposable {
   }
 
   private persistAndNotify(): Promise<void> {
-    const snapshot = this.list().map((session) => ({
-      ...session,
-      ...(session.kind === 'custom' ? { command: '' } : {})
-    }));
     this.persistChain = this.persistChain
       .catch(() => undefined)
-      .then(() => this.context.workspaceState.update(STORAGE_KEY, snapshot));
+      .then(() =>
+        this.sessionStore.save(
+          this.list(),
+          this.eventLedger.events,
+          this.eventLedger.nextSequence
+        )
+      );
     this.changedEmitter.fire();
     return this.persistChain;
+  }
+
+  private recordEvent(
+    sessionId: string,
+    kind: SessionEventKind,
+    source: SessionEventSource,
+    summary: string,
+    attention: SessionEvent['attention'] = 'none',
+    provider?: AgentEvent['provider'],
+    providerSessionId?: string
+  ): void {
+    this.eventLedger = appendSessionEvent(this.eventLedger, {
+      sessionId,
+      kind,
+      source,
+      summary,
+      attention,
+      observedAt: Date.now(),
+      ...(provider ? { provider } : {}),
+      ...(providerSessionId ? { providerSessionId } : {})
+    });
   }
 
   private captureCommandOutputEnabled(): boolean {
@@ -798,8 +1148,8 @@ export class SessionManager implements vscode.Disposable {
       return {
         command,
         integrationsSkipped:
-          launchShell === 'unknown' &&
-          isDirectAgentCommand(request.command, 'codex')
+          !isDirectAgentCommand(request.command, 'codex') ||
+          launchShell === 'unknown'
       };
     }
     if (
@@ -807,7 +1157,14 @@ export class SessionManager implements vscode.Disposable {
       /(^|\s)--settings(?:\s|=)/.test(request.command) ||
       !isDirectClaudeCommand(request.command)
     ) {
-      return { command: request.command, integrationsSkipped: false };
+      return {
+        command: request.command,
+        integrationsSkipped:
+          request.kind === 'claude' &&
+          vscode.workspace
+            .getConfiguration('lookout.claude')
+            .get('lifecycleIntegration', true)
+      };
     }
     const statusLineIntegration = vscode.workspace
       .getConfiguration('lookout.usage.claude')
@@ -834,6 +1191,7 @@ export class SessionManager implements vscode.Disposable {
       'claude-lookout-settings.json'
     );
     const hooks = {
+      SessionStart: [hookGroup(notifyHelperPath, 'session-start')],
       UserPromptSubmit: [
         hookGroup(notifyHelperPath, 'running', 'Claude is working')
       ],
@@ -934,7 +1292,8 @@ type HookAction =
   | 'background-start'
   | 'background-stop'
   | 'command-start'
-  | 'command-stop';
+  | 'command-stop'
+  | 'session-start';
 
 function hookGroup(
   helperPath: string,
@@ -971,21 +1330,6 @@ function sessionIdFromTerminal(terminal: vscode.Terminal): string | undefined {
   }
   const sessionId = options.env.LOOKOUT_SESSION_ID;
   return typeof sessionId === 'string' ? sessionId : undefined;
-}
-
-function isPersistedSession(value: unknown): value is AgentSession {
-  // A corrupted workspace-state entry must not be able to break activation.
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record.id === 'string' &&
-    record.id.length > 0 &&
-    typeof record.label === 'string' &&
-    typeof record.cwd === 'string' &&
-    typeof record.status === 'string'
-  );
 }
 
 function sameEndpoint(

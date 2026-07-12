@@ -148,6 +148,23 @@ test('accepts authenticated agent and usage events on loopback', async (context)
       result: { outcome: 'completed', durationMs: 24, stdout: 'passed' }
     });
 
+    const identityResponse = await post(endpoint.url, endpoint.token, {
+      kind: 'provider-session',
+      sessionId: 'session-1',
+      provider: 'codex',
+      providerSessionId: 'provider-session-1',
+      providerSessionSource: 'startup',
+      transcript_path: 'must-not-cross-the-bridge'
+    });
+    assert.equal(identityResponse.status, 204);
+    assert.deepEqual(agentEvents.at(-1), {
+      kind: 'provider-session',
+      sessionId: 'session-1',
+      provider: 'codex',
+      providerSessionId: 'provider-session-1',
+      providerSessionSource: 'startup'
+    });
+
     const usageResponse = await post(
       endpoint.url.replace(/\/events$/, '/usage'),
       endpoint.token,

@@ -14,6 +14,34 @@ import {
 import type { AgentKind, LaunchRequest } from './types';
 import { UsageManager } from './usageManager';
 import { UsageStatusBar, UsageTreeProvider } from './usageTree';
+import { InboxTreeProvider } from './inboxTree';
+import { HistoryTreeProvider } from './historyTree';
+import {
+  buildProfileCatalog,
+  type AgentProfile
+} from './profiles/profileCatalog';
+import { TemplateManager } from './templateManager';
+import { buildTemplateLaunchRequest } from './templates/templateLaunch';
+import type {
+  SessionTemplateDraft,
+  TemplateFolderPolicy
+} from './templates/templateModel';
+import { evaluateHealth } from './health';
+import type {
+  BaselineHealthState,
+  BridgeState,
+  LifecycleState,
+  ProfileState,
+  ProviderIdentityState,
+  RemoteKind,
+  UsageHealthState
+} from './health';
+import type { HealthReport } from './health';
+import { formatDoctorReport } from './doctor';
+import {
+  createSupportBundle,
+  serializeSupportBundle
+} from './supportBundle';
 
 export interface LookoutExtensionTestApi {
   readonly sessions: SessionManager;
@@ -32,10 +60,17 @@ export async function activate(
     treeDataProvider: sessionTree
   });
   const sessionStatus = new SessionStatusBar(sessions);
-  const reviewTree = new ReviewTreeProvider(sessions);
+  const reviewTree = new ReviewTreeProvider(sessions, context.workspaceState);
   const usage = new UsageManager(context, sessions);
   const usageTree = new UsageTreeProvider(usage);
   const usageStatus = new UsageStatusBar(usage);
+  const inboxTree = new InboxTreeProvider(sessions);
+  const historyTree = new HistoryTreeProvider(sessions);
+  const templates = new TemplateManager(context.globalState);
+  const doctorOutput = vscode.window.createOutputChannel('Lookout Doctor', {
+    log: true
+  });
+  await templates.initialize();
 
   context.subscriptions.push(
     sessionTree,
@@ -45,6 +80,9 @@ export async function activate(
     usage,
     usageTree,
     usageStatus,
+    inboxTree,
+    historyTree,
+    doctorOutput,
     vscode.window.registerTreeDataProvider('lookout.review', reviewTree),
     vscode.workspace.registerTextDocumentContentProvider(
       'lookout-baseline',
@@ -55,7 +93,21 @@ export async function activate(
       reviewTree
     ),
     vscode.window.registerTreeDataProvider('lookout.usage', usageTree),
+    vscode.window.registerTreeDataProvider('lookout.inbox', inboxTree),
+    vscode.window.registerTreeDataProvider('lookout.history', historyTree),
     register('lookout.launchAgent', () => chooseAndLaunchAgent(sessions)),
+    register('lookout.configureProfiles', () => configureProfiles()),
+    register('lookout.runDoctor', () =>
+      runDoctor(context, sessions, usage, doctorOutput)
+    ),
+    register('lookout.exportSupportBundle', () =>
+      exportSupportBundle(context, sessions, usage)
+    ),
+    register('lookout.createTemplate', () => createSessionTemplate(templates)),
+    register('lookout.launchTemplate', () =>
+      launchSessionTemplate(templates, sessions)
+    ),
+    register('lookout.deleteTemplate', () => deleteSessionTemplate(templates)),
     register('lookout.launchCodex', () => launchAgent(sessions, 'codex')),
     register('lookout.launchClaude', () => launchAgent(sessions, 'claude')),
     register('lookout.launchCustom', () => launchAgent(sessions, 'custom')),
@@ -79,6 +131,10 @@ export async function activate(
       return id ? sessions.focus(id) : undefined;
     }),
     register('lookout.focusNextAttention', () => sessions.focusNextAttention()),
+    register('lookout.focusNextUnread', () => sessions.focusAdjacentUnread(1)),
+    register('lookout.focusPreviousUnread', () =>
+      sessions.focusAdjacentUnread(-1)
+    ),
     register('lookout.pickSession', () => pickSession(sessions)),
     register('lookout.focusNextSession', () => sessions.focusAdjacent(1)),
     register('lookout.focusPreviousSession', () => sessions.focusAdjacent(-1)),
@@ -103,6 +159,39 @@ export async function activate(
     register('lookout.closeSession', (item?: SessionTreeItem) => {
       const id = sessionId(item);
       return id ? sessions.close(id) : undefined;
+    }),
+    register('lookout.resumeSession', (item?: SessionItemLike) => {
+      const id = sessionId(item);
+      return id ? sessions.continueProviderSession(id, 'resume') : undefined;
+    }),
+    register('lookout.forkSession', (item?: SessionItemLike) => {
+      const id = sessionId(item);
+      return id ? sessions.continueProviderSession(id, 'fork') : undefined;
+    }),
+    register('lookout.archiveSession', (item?: SessionItemLike) => {
+      const id = sessionId(item);
+      return id ? sessions.archiveSession(id) : undefined;
+    }),
+    register('lookout.unarchiveSession', (item?: SessionItemLike) => {
+      const id = sessionId(item);
+      return id ? sessions.unarchiveSession(id) : undefined;
+    }),
+    register('lookout.browseHistory', async () => {
+      await vscode.commands.executeCommand('workbench.view.extension.lookout');
+      await vscode.commands.executeCommand('lookout.history.focus');
+    }),
+    register('lookout.deleteHistory', async () => {
+      const choice = await vscode.window.showWarningMessage(
+        'Delete closed and archived Lookout history? This removes only Lookout metadata and does not delete provider conversations, terminals, worktrees, files, or commits.',
+        { modal: true },
+        'Delete Lookout History'
+      );
+      if (choice === 'Delete Lookout History') {
+        const removed = await sessions.deleteClosedHistory();
+        void vscode.window.showInformationMessage(
+          `Deleted ${removed} Lookout history entr${removed === 1 ? 'y' : 'ies'}.`
+        );
+      }
     }),
     register('lookout.restartSession', (item?: SessionTreeItem) => {
       if (!vscode.workspace.isTrusted) {
@@ -162,6 +251,9 @@ export async function activate(
     ),
     register('lookout.openTestExplorer', () =>
       vscode.commands.executeCommand('workbench.view.testing.focus')
+    ),
+    register('lookout.runVerification', (item?: ReviewTreeItem) =>
+      reviewTree.runVerification(item)
     ),
     register('lookout.runTestTask', () => runTestTask()),
     register('lookout.startDebug', () =>
@@ -280,41 +372,360 @@ async function chooseAndLaunchAgent(
   sessions: SessionManager,
   cwdOverride?: string
 ): Promise<void> {
-  const providers = [
-      {
-        label: 'Codex',
-        description: 'OpenAI Codex CLI',
-        iconPath: new vscode.ThemeIcon('terminal'),
-        agentKind: 'codex' as const
-      },
-      {
-        label: 'Claude Code',
-        description: 'Anthropic Claude Code',
-        iconPath: new vscode.ThemeIcon('sparkle'),
-        agentKind: 'claude' as const
-      },
-      {
-        label: 'Custom',
-        description: 'Choose another terminal agent command',
-        iconPath: new vscode.ThemeIcon('tools'),
-        agentKind: 'custom' as const
-      }
-    ];
+  const profiles = await currentProfiles();
   const selected = await vscode.window.showQuickPick(
-    providers.filter(
-      (provider) =>
-        provider.agentKind === 'custom' ||
+    profiles
+      .filter(
+        (profile) =>
+          profile.kind === 'custom' ||
         vscode.workspace
-          .getConfiguration(`lookout.${provider.agentKind}`)
+          .getConfiguration(`lookout.${profile.kind}`)
           .get('enabled', true)
-    ),
+      )
+      .map((profile) => ({
+        label: profile.displayName,
+        description: profileAvailabilityLabel(profile),
+        detail: profile.availability.detail,
+        iconPath: new vscode.ThemeIcon(
+          profile.kind === 'claude'
+            ? 'sparkle'
+            : profile.kind === 'codex'
+              ? 'terminal'
+              : 'tools'
+        ),
+        profile
+      })),
     {
       title: 'New Agent',
-      placeHolder: 'Choose the agent to launch'
+      placeHolder: 'Choose a detected provider profile'
     }
   );
   if (selected) {
-    await launchAgent(sessions, selected.agentKind, undefined, cwdOverride);
+    if (
+      selected.profile.availability.state === 'missing' ||
+      selected.profile.availability.state === 'unconfigured' ||
+      selected.profile.availability.state === 'resolver-error'
+    ) {
+      const choice = selected.profile.commandReference
+        ? await vscode.window.showErrorMessage(
+            selected.profile.availability.detail,
+            'Open Settings'
+          )
+        : await vscode.window.showErrorMessage(
+            selected.profile.availability.detail
+          );
+      if (choice && selected.profile.commandReference) {
+        await vscode.commands.executeCommand(
+          'workbench.action.openSettings',
+          selected.profile.commandReference
+        );
+      }
+      return;
+    }
+    await launchAgent(sessions, selected.profile.kind, undefined, cwdOverride);
+  }
+}
+
+async function configureProfiles(): Promise<void> {
+  const profiles = await currentProfiles();
+  const selected = await vscode.window.showQuickPick(
+    profiles.map((profile) => ({
+      label: profile.displayName,
+      description: profileAvailabilityLabel(profile),
+      detail: [
+        profile.availability.detail,
+        `Lifecycle: ${profile.capabilities.lifecycle.support}`,
+        `Resume: ${profile.capabilities.resume.support}`,
+        `Fork: ${profile.capabilities.fork.support}`
+      ].join(' · '),
+      profile
+    })),
+    {
+      title: 'Agent Profiles',
+      placeHolder: 'Inspect a profile or open its command setting'
+    }
+  );
+  if (selected?.profile.commandReference) {
+    await vscode.commands.executeCommand(
+      'workbench.action.openSettings',
+      selected.profile.commandReference
+    );
+  } else if (selected) {
+    void vscode.window.showInformationMessage(
+      'Generic terminal agents ask for a command at launch and support the explicit Lookout attention helper.'
+    );
+  }
+}
+
+async function createSessionTemplate(templates: TemplateManager): Promise<void> {
+  const profiles = await currentProfiles();
+  const selectedProfile = await vscode.window.showQuickPick(
+    profiles.map((profile) => ({
+      label: profile.displayName,
+      description: profileAvailabilityLabel(profile),
+      profile
+    })),
+    { title: 'Template Agent Profile' }
+  );
+  if (!selectedProfile) {
+    return;
+  }
+  const name = await vscode.window.showInputBox({
+    title: 'Template Name',
+    prompt: 'A reusable mission name, such as Verify bug fix',
+    validateInput: nonEmpty
+  });
+  if (!name) {
+    return;
+  }
+  const folderChoice = await vscode.window.showQuickPick(
+    [
+      {
+        label: 'Ask every time',
+        description: 'Choose a working folder when the template launches',
+        policy: { kind: 'prompt' } as TemplateFolderPolicy
+      },
+      ...(vscode.workspace.workspaceFolders ?? []).map((folder) => ({
+        label: `Workspace: ${folder.name}`,
+        description: folder.uri.fsPath,
+        policy: {
+          kind: 'workspace' as const,
+          workspaceFolder: folder.name
+        }
+      }))
+    ],
+    { title: 'Template Working Folder' }
+  );
+  if (!folderChoice) {
+    return;
+  }
+  const worktree = await vscode.window.showQuickPick(
+    [
+      {
+        label: 'Shared working folder',
+        description: 'Launch in the selected folder',
+        value: 'shared' as const
+      },
+      {
+        label: 'Isolated Git worktree',
+        description: 'Create a branch and sibling worktree at launch',
+        value: 'isolated' as const
+      }
+    ],
+    { title: 'Template Worktree Policy' }
+  );
+  if (!worktree) {
+    return;
+  }
+  const initialTask = await vscode.window.showInputBox({
+    title: 'Initial Task (Optional)',
+    prompt: 'Lookout stages this text in the terminal without sending it'
+  });
+  const browserUrl = await vscode.window.showInputBox({
+    title: 'Browser URL (Optional)',
+    prompt: 'An http(s) URL to open after launch'
+  });
+  const reviewLayout = await vscode.window.showQuickPick(
+    [
+      { label: 'Default layout', value: 'default' as const },
+      { label: 'Open review layout', value: 'review' as const }
+    ],
+    { title: 'Template Review Layout' }
+  );
+  if (!reviewLayout) {
+    return;
+  }
+  const idBase = name
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-|-$/g, '') || 'template';
+  const draft: SessionTemplateDraft = {
+    id: `${idBase}-${Date.now().toString(36)}`,
+    name,
+    labelPattern: `${name} {counter}`,
+    profileId: selectedProfile.profile.id,
+    folderPolicy: folderChoice.policy,
+    worktreePolicy: worktree.value,
+    reviewLayout: reviewLayout.value,
+    ...(initialTask?.trim() ? { initialTask: initialTask.trim() } : {}),
+    ...(browserUrl?.trim() ? { browserUrl: browserUrl.trim() } : {})
+  };
+  try {
+    await templates.create(draft);
+    void vscode.window.showInformationMessage(`Created template ${name}.`);
+  } catch (error) {
+    void vscode.window.showErrorMessage(
+      `Could not create the template: ${commandError(error)}`
+    );
+  }
+}
+
+async function launchSessionTemplate(
+  templates: TemplateManager,
+  sessions: SessionManager
+): Promise<void> {
+  if (!vscode.workspace.isTrusted) {
+    void vscode.window.showWarningMessage(
+      'Trust this workspace before launching a session template.'
+    );
+    return;
+  }
+  const available = templates.list();
+  if (available.length === 0) {
+    const choice = await vscode.window.showInformationMessage(
+      'No session templates exist yet.',
+      'Create Template'
+    );
+    if (choice) {
+      await createSessionTemplate(templates);
+    }
+    return;
+  }
+  const selected = await vscode.window.showQuickPick(
+    available.map((template) => ({
+      label: template.name,
+      description: `${template.worktreePolicy} worktree · ${template.profileId}`,
+      template
+    })),
+    { title: 'Launch Agent from Template' }
+  );
+  if (!selected) {
+    return;
+  }
+  const profiles = await currentProfiles();
+  const profile = profiles.find(
+    (candidate) => candidate.id === selected.template.profileId
+  );
+  if (!profile) {
+    void vscode.window.showErrorMessage(
+      `Template profile ${selected.template.profileId} is unavailable.`
+    );
+    return;
+  }
+  if (
+    profile.availability.state === 'missing' ||
+    profile.availability.state === 'unconfigured' ||
+    profile.availability.state === 'resolver-error'
+  ) {
+    void vscode.window.showErrorMessage(profile.availability.detail);
+    return;
+  }
+  const command = await runtimeProfileCommand(profile);
+  if (!command) {
+    return;
+  }
+  const selectedFolder =
+    selected.template.folderPolicy.kind === 'prompt'
+      ? await pickWorkingDirectory()
+      : undefined;
+  const built = buildTemplateLaunchRequest(selected.template, {
+    profile: {
+      id: profile.id,
+      kind: profile.kind,
+      command,
+      displayName: profile.displayName
+    },
+    workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map((folder) => ({
+      name: folder.name,
+      path: folder.uri.fsPath
+    })),
+    ...(selectedFolder ? { selectedFolder } : {}),
+    counter:
+      sessions.list().filter((session) => session.kind === profile.kind).length + 1
+  });
+  if (!built.ok) {
+    void vscode.window.showErrorMessage(built.errors.join(' '));
+    return;
+  }
+  let request = built.request.session;
+  if (built.request.worktreePolicy === 'isolated') {
+    const target = await createAgentWorktree(request.cwd);
+    if (!target) {
+      return;
+    }
+    request = { ...request, cwd: target };
+  }
+  const launched = await sessions.launch(request);
+  await templates.markUsed(selected.template.id);
+  if (built.request.initialTask) {
+    sessions.stageText(launched.id, built.request.initialTask);
+  }
+  if (built.request.reviewLayout === 'review') {
+    await openReviewLayout(sessions);
+  }
+  if (built.request.browserUrl) {
+    await openUrl(built.request.browserUrl);
+  }
+}
+
+async function deleteSessionTemplate(templates: TemplateManager): Promise<void> {
+  const selected = await vscode.window.showQuickPick(
+    templates.list().map((template) => ({
+      label: template.name,
+      description: template.profileId,
+      template
+    })),
+    { title: 'Delete Session Template' }
+  );
+  if (!selected) {
+    return;
+  }
+  const choice = await vscode.window.showWarningMessage(
+    `Delete template ${selected.template.name}?`,
+    { modal: true },
+    'Delete Template'
+  );
+  if (choice === 'Delete Template') {
+    await templates.remove(selected.template.id);
+  }
+}
+
+async function runtimeProfileCommand(
+  profile: AgentProfile
+): Promise<string | undefined> {
+  if (profile.kind === 'custom') {
+    return vscode.window.showInputBox({
+      title: 'Generic Agent Command',
+      prompt: 'This runtime command is not stored in the template',
+      validateInput: nonEmpty
+    });
+  }
+  return vscode.workspace
+    .getConfiguration(`lookout.${profile.kind}`)
+    .get<string>('command', profile.kind);
+}
+
+async function currentProfiles(): Promise<readonly AgentProfile[]> {
+  return buildProfileCatalog({
+    commands: {
+      codex: vscode.workspace
+        .getConfiguration('lookout.codex')
+        .get<string>('command', 'codex'),
+      claude: vscode.workspace
+        .getConfiguration('lookout.claude')
+        .get<string>('command', 'claude')
+    },
+    resolveExecutable: async (executable) => ({
+      available: await executableAvailable(executable),
+      detail: `Checked ${executable} in the current extension host.`
+    })
+  });
+}
+
+function profileAvailabilityLabel(profile: AgentProfile): string {
+  switch (profile.availability.state) {
+    case 'available':
+      return 'Detected · lifecycle and continuity available';
+    case 'not-direct':
+      return 'Configured wrapper · launch only';
+    case 'configuration-required':
+      return 'Command chosen at launch';
+    case 'missing':
+      return 'Executable not found';
+    case 'unconfigured':
+      return 'Not configured';
+    case 'resolver-error':
+      return 'Detection failed';
   }
 }
 
@@ -329,6 +740,13 @@ async function launchAgentInWorktree(sessions: SessionManager): Promise<void> {
   if (!source) {
     return;
   }
+  const target = await createAgentWorktree(source);
+  if (target) {
+    await chooseAndLaunchAgent(sessions, target);
+  }
+}
+
+async function createAgentWorktree(source: string): Promise<string | undefined> {
   let repoRoot: string;
   try {
     repoRoot = (await runCommand('git', [
@@ -338,7 +756,7 @@ async function launchAgentInWorktree(sessions: SessionManager): Promise<void> {
     void vscode.window.showErrorMessage(
       'The selected folder is not inside a Git repository, or Git is not available.'
     );
-    return;
+    return undefined;
   }
   const suffix = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 12);
   const branch = await vscode.window.showInputBox({
@@ -347,7 +765,7 @@ async function launchAgentInWorktree(sessions: SessionManager): Promise<void> {
     validateInput: nonEmpty
   });
   if (!branch) {
-    return;
+    return undefined;
   }
   const target = await vscode.window.showInputBox({
     title: 'New Agent Worktree Folder',
@@ -358,7 +776,7 @@ async function launchAgentInWorktree(sessions: SessionManager): Promise<void> {
     validateInput: nonEmpty
   });
   if (!target) {
-    return;
+    return undefined;
   }
   try {
     await runCommand('git', [
@@ -368,9 +786,9 @@ async function launchAgentInWorktree(sessions: SessionManager): Promise<void> {
     void vscode.window.showErrorMessage(
       `Could not create the worktree: ${commandError(error)}`
     );
-    return;
+    return undefined;
   }
-  await chooseAndLaunchAgent(sessions, target);
+  return target;
 }
 
 async function splitSession(
@@ -557,6 +975,10 @@ async function openBrowser(): Promise<void> {
   if (!value) {
     return;
   }
+  await openUrl(value);
+}
+
+async function openUrl(value: string): Promise<void> {
   const uri = await vscode.env.asExternalUri(vscode.Uri.parse(value));
   const commands = await vscode.commands.getCommands(true);
   if (commands.includes('workbench.action.browser.open')) {
@@ -600,8 +1022,12 @@ async function runWorkspaceTask(): Promise<void> {
   }
 }
 
-function sessionId(item: SessionTreeItem | undefined): string | undefined {
-  return item?.session.id;
+interface SessionItemLike {
+  readonly session?: { readonly id: string };
+}
+
+function sessionId(item: SessionItemLike | undefined): string | undefined {
+  return item?.session?.id;
 }
 
 function displayKind(kind: AgentKind): string {
@@ -613,6 +1039,203 @@ function displayKind(kind: AgentKind): string {
 
 function nonEmpty(value: string): string | undefined {
   return value.trim() ? undefined : 'Enter a value';
+}
+
+async function runDoctor(
+  context: vscode.ExtensionContext,
+  sessions: SessionManager,
+  usage: UsageManager,
+  output: vscode.LogOutputChannel
+): Promise<void> {
+  const report = await collectHealth(sessions, usage);
+  output.clear();
+  for (const line of formatDoctorReport(report, productHeader(context))) {
+    output.appendLine(line);
+  }
+  output.show(true);
+}
+
+async function exportSupportBundle(
+  context: vscode.ExtensionContext,
+  sessions: SessionManager,
+  usage: UsageManager
+): Promise<void> {
+  const destination = await vscode.window.showSaveDialog({
+    title: 'Export Sanitized Lookout Support Bundle',
+    filters: { JSON: ['json'] },
+    saveLabel: 'Export Sanitized Bundle'
+  });
+  if (!destination) {
+    return;
+  }
+  const report = await collectHealth(sessions, usage);
+  const bundle = createSupportBundle({
+    generatedAt: Date.now(),
+    product: productHeader(context),
+    health: report,
+    features: {
+      lifecycleCodex: vscode.workspace
+        .getConfiguration('lookout.codex')
+        .get('lifecycleIntegration', true),
+      lifecycleClaude: vscode.workspace
+        .getConfiguration('lookout.claude')
+        .get('lifecycleIntegration', true),
+      resultCapture: vscode.workspace
+        .getConfiguration('lookout.review')
+        .get('captureCommandOutput', false)
+    },
+    redaction: {
+      homePaths: [homedir()],
+      workspacePaths: (vscode.workspace.workspaceFolders ?? []).map(
+        (folder) => folder.uri.fsPath
+      )
+    }
+  });
+  await vscode.workspace.fs.writeFile(
+    destination,
+    new TextEncoder().encode(serializeSupportBundle(bundle))
+  );
+  void vscode.window.showInformationMessage(
+    'Sanitized Lookout support bundle exported.'
+  );
+}
+
+async function collectHealth(
+  sessions: SessionManager,
+  usage: UsageManager
+): Promise<HealthReport> {
+  const [profiles, git, node] = await Promise.all([
+    currentProfiles(),
+    executableAvailable('git'),
+    executableAvailable('node')
+  ]);
+  const snapshots = usage.list();
+  return evaluateHealth({
+    observedAt: Date.now(),
+    workspaceTrusted: vscode.workspace.isTrusted,
+    remoteKind: currentRemoteKind(),
+    git: git ? 'available' : 'missing',
+    node: node ? 'available' : 'missing',
+    profiles: profiles.map((profile) => ({
+      kind: profile.kind === 'custom' ? 'generic' : profile.kind,
+      state: profileHealthState(profile)
+    })),
+    sessions: sessions.list().map((session) => ({
+      bridge: bridgeHealthState(session.bridgeAvailable),
+      lifecycle: lifecycleHealthState(session.integration.lifecycle),
+      providerIdentity: providerIdentityHealthState(session),
+      baseline: baselineHealthState(session.baseline)
+    })),
+    usage: (['codex', 'claude'] as const).map((provider) => ({
+      provider,
+      state: vscode.workspace
+        .getConfiguration(`lookout.usage.${provider}`)
+        .get('enabled', true)
+        ? usageHealthState(
+            snapshots.find((snapshot) => snapshot.provider === provider)?.status
+          )
+        : 'disabled'
+    }))
+  });
+}
+
+function productHeader(context: vscode.ExtensionContext): {
+  extensionVersion: string;
+  vscodeVersion: string;
+  platform: 'win32' | 'darwin' | 'linux' | 'other';
+} {
+  const version = (context.extension.packageJSON as { version?: unknown }).version;
+  return {
+    extensionVersion: typeof version === 'string' ? version : 'unknown',
+    vscodeVersion: vscode.version,
+    platform: process.platform === 'win32' ||
+      process.platform === 'darwin' ||
+      process.platform === 'linux'
+      ? process.platform
+      : 'other'
+  };
+}
+
+function currentRemoteKind(): RemoteKind {
+  const remote = vscode.env.remoteName?.toLowerCase();
+  if (!remote) {
+    return 'local';
+  }
+  if (remote.includes('wsl')) {
+    return 'wsl';
+  }
+  if (remote.includes('ssh')) {
+    return 'ssh';
+  }
+  if (remote.includes('container')) {
+    return 'dev-container';
+  }
+  return 'other';
+}
+
+function profileHealthState(profile: AgentProfile): ProfileState {
+  switch (profile.availability.state) {
+    case 'available': return 'available';
+    case 'missing': return 'missing';
+    case 'unconfigured': return 'unconfigured';
+    case 'not-direct': return 'not-direct';
+    case 'resolver-error': return 'error';
+    case 'configuration-required': return 'configuration-required';
+  }
+}
+
+function bridgeHealthState(available: boolean): BridgeState {
+  return available ? 'available' : 'unavailable';
+}
+
+function lifecycleHealthState(
+  state: import('./types').SessionIntegration['lifecycle']
+): LifecycleState {
+  switch (state) {
+    case 'healthy': return 'healthy';
+    case 'awaiting-first-hook': return 'needs-trust';
+    case 'stale': return 'degraded';
+    case 'bridge-unavailable':
+    case 'injection-skipped':
+    case 'disabled':
+      return 'unavailable';
+  }
+}
+
+function providerIdentityHealthState(
+  session: import('./types').AgentSession
+): ProviderIdentityState {
+  if (session.integration.conflict) {
+    return 'conflict';
+  }
+  if (session.providerSessions.length > 0) {
+    return 'observed';
+  }
+  if (session.integration.expectedProviderSessionId) {
+    return 'expected';
+  }
+  return session.kind === 'custom' ? 'unavailable' : 'unknown';
+}
+
+function baselineHealthState(
+  baseline: import('./types').GitBaseline | undefined
+): BaselineHealthState {
+  return baseline ? 'fresh' : 'unavailable';
+}
+
+function usageHealthState(
+  status: import('./usageTypes').UsageStatus | undefined
+): UsageHealthState {
+  switch (status) {
+    case 'available': return 'current';
+    case 'stale': return 'stale';
+    case 'waiting': return 'waiting';
+    case 'authRequired': return 'signed-out';
+    case 'unsupported': return 'unsupported';
+    case 'error':
+    case undefined:
+      return 'unknown';
+  }
 }
 
 async function runTestTask(): Promise<void> {

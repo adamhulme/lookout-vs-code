@@ -1,0 +1,11 @@
+{
+  "session_id": "claude-session-123",
+  "source": "startup",
+  "cwd": "/workspace/project",
+  "hook_event_name": "SessionStart",
+  "model": "claude-sonnet",
+  "transcript_path": "/private/claude/transcript.jsonl",
+  "prompt": "private prompt",
+  "last_assistant_message": "private answer",
+  "unknown_text": "private unknown value"
+}

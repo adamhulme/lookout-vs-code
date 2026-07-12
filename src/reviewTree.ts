@@ -14,9 +14,29 @@ import {
 } from './gitReview';
 import type { SessionManager } from './sessionManager';
 import type { AgentSession, CommandResult } from './types';
+import type { ReviewPacket } from './verification/reviewPacket';
+import { VerificationManager } from './verification/verificationManager';
+import {
+  loadVerificationStore,
+  persistableVerificationStore,
+  VERIFICATION_STORE_VERSION
+} from './verification/verificationStoreModel';
+import { VscodeDiagnosticEvidenceSource } from './verification/vscodeDiagnosticEvidence';
+import { toReviewSessionSnapshots } from './verification/sessionEvidenceAdapter';
+import {
+  completeTaskVerificationRun,
+  restoredTaskVerificationPolicy,
+  startTaskVerificationRun,
+  taskVerificationPolicy,
+  type TaskCompletion,
+  type VerificationTaskIdentity,
+  type VerificationTaskKind
+} from './verification/taskVerification';
+import type { ReviewContext } from './verification/verificationTypes';
 
 const BASELINE_SCHEME = 'lookout-baseline';
 const COMMAND_RESULT_SCHEME = 'lookout-command-result';
+const VERIFICATION_STORE_KEY = 'lookout.verificationStore.v1';
 type ReviewKind =
   | 'group'
   | 'image'
@@ -26,6 +46,7 @@ type ReviewKind =
   | 'artifact-worktree'
   | 'diagnostic'
   | 'runtime'
+  | 'evidence'
   | 'command-result'
   | 'message';
 type ReviewGroup =
@@ -101,6 +122,17 @@ export class ReviewTreeItem extends vscode.TreeItem {
       this.iconPath = new vscode.ThemeIcon('info');
       return;
     }
+    if (kind === 'evidence') {
+      this.description = options.description;
+      this.tooltip = options.tooltip;
+      this.iconPath = options.warning
+        ? new vscode.ThemeIcon(
+            'warning',
+            new vscode.ThemeColor('list.warningForeground')
+          )
+        : new vscode.ThemeIcon('verified');
+      return;
+    }
     if (kind === 'runtime' || kind === 'command-result') {
       this.description = options.description;
       this.tooltip = options.tooltip;
@@ -115,6 +147,7 @@ export class ReviewTreeItem extends vscode.TreeItem {
     if (kind === 'worktree' || kind === 'artifact-worktree') {
       this.description = options.description;
       this.tooltip = options.tooltip;
+      this.contextValue = kind === 'worktree' ? 'lookout.reviewWorktree' : undefined;
       this.iconPath = options.warning
         ? new vscode.ThemeIcon(
             'warning',
@@ -179,6 +212,12 @@ export class ReviewTreeProvider
   private plans: ReviewTreeItem[] = [];
   private planCount = 0;
   private readonly plansByWorktree = new Map<string, ReviewTreeItem[]>();
+  private readonly diagnosticsSource = new VscodeDiagnosticEvidenceSource();
+  private verification: VerificationManager | undefined;
+  private readonly packetsByWorktree = new Map<
+    string,
+    ReviewPacket | 'unavailable'
+  >();
   private planPaths = new Set<string>();
   private changeMessage = 'Select an agent with a Git baseline to review changes';
   // Beyond this, a tree stops being reviewable; Source Control owns the full
@@ -187,12 +226,17 @@ export class ReviewTreeProvider
   private static readonly maxChangesPerWorktree = 100;
   private refreshGeneration = 0;
   private changeGeneration = 0;
+  private evidenceGeneration = 0;
+  private persistChain: Promise<void> = Promise.resolve();
   private refreshTimer: NodeJS.Timeout | undefined;
   private worktreeRefreshTimer: NodeJS.Timeout | undefined;
   public readonly onDidChangeTreeData = this.changedEmitter.event;
   public readonly onDidChange = this.contentChangedEmitter.event;
 
-  public constructor(private readonly sessions: SessionManager) {
+  public constructor(
+    private readonly sessions: SessionManager,
+    private readonly workspaceState?: vscode.Memento
+  ) {
     const imageWatcher = vscode.workspace.createFileSystemWatcher(
       '**/*.{png,jpg,jpeg,gif,webp}'
     );
@@ -210,12 +254,25 @@ export class ReviewTreeProvider
     this.disposables.push(
       sessions.onDidSelectSession(() => this.scheduleRefresh()),
       sessions.onDidChange(() => {
+        this.reconcileVerificationContexts();
         this.scheduleRefresh();
         this.refreshRuntime();
       }),
-      sessions.onDidChangeTopology(() => this.scheduleRefresh()),
-      vscode.workspace.onDidSaveTextDocument(() => void this.refreshChanges()),
-      vscode.languages.onDidChangeDiagnostics(() => this.refreshDiagnostics()),
+      sessions.onDidChangeTopology(() => {
+        this.reconcileVerificationContexts();
+        this.scheduleRefresh();
+      }),
+      vscode.workspace.onDidSaveTextDocument((document) => {
+        this.invalidateEvidenceForUri(document.uri);
+        void this.refreshChanges();
+      }),
+      vscode.languages.onDidChangeDiagnostics((event) => {
+        for (const root of this.diagnosticsSource.noteChanges(event.uris)) {
+          this.verification?.invalidateRoot(root);
+        }
+        this.refreshDiagnostics();
+        void this.refreshChanges();
+      }),
       vscode.tasks.onDidStartTask(() => this.refreshRuntime()),
       vscode.tasks.onDidEndTask(() => this.refreshRuntime()),
       vscode.debug.onDidStartDebugSession(() => this.refreshRuntime()),
@@ -229,6 +286,18 @@ export class ReviewTreeProvider
   }
 
   public async initialize(): Promise<void> {
+    const initial = loadVerificationStore(
+      this.workspaceState?.get(VERIFICATION_STORE_KEY)
+    );
+    this.verification = new VerificationManager({
+      diagnostics: this.diagnosticsSource,
+      initial: {
+        contexts: [...initial.contexts],
+        runs: [...initial.runs],
+        diagnosticBaselines: [...initial.diagnosticBaselines]
+      }
+    });
+    this.reconcileVerificationContexts();
     await this.refresh();
     this.refreshRuntime();
     this.worktreeRefreshTimer = setInterval(
@@ -350,6 +419,7 @@ export class ReviewTreeProvider
       toArtifactItems('image', imageUris, max, session),
       toChangedPlanItems(planUris, worktreeChanges, max)
     ]);
+    await this.refreshReviewEvidence();
     if (generation !== this.refreshGeneration) {
       return;
     }
@@ -387,6 +457,7 @@ export class ReviewTreeProvider
   public async refreshChanges(): Promise<void> {
     const generation = ++this.changeGeneration;
     const worktreeChanges = await loadWorktreeChanges(this.sessions);
+    await this.refreshReviewEvidence();
     if (generation !== this.changeGeneration) {
       return;
     }
@@ -456,6 +527,64 @@ export class ReviewTreeProvider
     this.changedEmitter.fire();
   }
 
+  /**
+   * Runs one user-selected VS Code task and records only bounded verification
+   * metadata against one physical-worktree review context.
+   */
+  public async runVerification(item?: ReviewTreeItem): Promise<void> {
+    if (!vscode.workspace.isTrusted) {
+      void vscode.window.showWarningMessage(
+        'Trust this workspace before running verification tasks.'
+      );
+      return;
+    }
+    const verification = this.verification;
+    if (!verification) {
+      void vscode.window.showWarningMessage(
+        'Review evidence is still initializing. Try again in a moment.'
+      );
+      return;
+    }
+    this.reconcileVerificationContexts();
+    const context = await this.pickVerificationContext(item);
+    if (!context) {
+      return;
+    }
+    const selection = await pickVerificationTask();
+    if (!selection) {
+      return;
+    }
+    const identity = verificationTaskIdentity(selection.task, selection.kind);
+    const policy = taskVerificationPolicy(identity);
+    const running = startTaskVerificationRun(context.id, identity);
+    verification.recordRun(running);
+    this.persistVerificationSnapshot();
+    void this.refreshChanges();
+
+    const completion = await observeTaskCompletion(selection.task);
+    let signature: import('./verification/verificationTypes').VerificationFreshnessSignature | undefined;
+    try {
+      signature = (
+        await verification.getReviewPacket(context.id, {
+          policy,
+          force: true
+        })
+      ).signature;
+    } catch {
+      // Without current bounded evidence, the run remains incomplete even if
+      // the task process itself exited successfully.
+    }
+    const completed = completeTaskVerificationRun(
+      running,
+      completion,
+      signature
+    );
+    verification.recordRun(completed);
+    this.persistVerificationSnapshot();
+    await this.refreshChanges();
+    showVerificationOutcome(completed.checks[0].outcome);
+  }
+
   public async open(item: ReviewTreeItem): Promise<void> {
     if (item.kind === 'change') {
       await this.openChange(item);
@@ -509,6 +638,7 @@ export class ReviewTreeProvider
     if (this.worktreeRefreshTimer) {
       clearInterval(this.worktreeRefreshTimer);
     }
+    this.verification?.dispose();
     for (const watcher of this.watchers) {
       watcher.dispose();
     }
@@ -517,6 +647,124 @@ export class ReviewTreeProvider
     }
     this.changedEmitter.dispose();
     this.contentChangedEmitter.dispose();
+  }
+
+  private reconcileVerificationContexts(): void {
+    if (!this.verification) {
+      return;
+    }
+    this.verification.reconcileSessions(
+      toReviewSessionSnapshots(
+        this.sessions.history(),
+        (sessionId) => this.sessions.isOpen(sessionId)
+      )
+    );
+    this.persistVerificationSnapshot();
+  }
+
+  private async refreshReviewEvidence(): Promise<void> {
+    const verification = this.verification;
+    if (!verification) {
+      return;
+    }
+    const generation = ++this.evidenceGeneration;
+    const activeContexts = verification
+      .listContexts()
+      .filter((context) => context.status === 'active');
+    const packets = await Promise.all(
+      activeContexts.map(async (context) => {
+        try {
+          const latestRun = verification.latestRun(context.id);
+          const policy = latestRun
+            ? restoredTaskVerificationPolicy(latestRun)
+            : undefined;
+          return {
+            key: normalizeRootKey(context.repoRoot),
+            packet: await verification.getReviewPacket(context.id, { policy })
+          } as const;
+        } catch {
+          return {
+            key: normalizeRootKey(context.repoRoot),
+            packet: 'unavailable' as const
+          };
+        }
+      })
+    );
+    if (generation !== this.evidenceGeneration) {
+      return;
+    }
+    this.packetsByWorktree.clear();
+    for (const value of packets) {
+      this.packetsByWorktree.set(value.key, value.packet);
+    }
+  }
+
+  private async pickVerificationContext(
+    item: ReviewTreeItem | undefined
+  ): Promise<ReviewContext | undefined> {
+    const active = (this.verification?.listContexts() ?? []).filter(
+      (context) => context.status === 'active'
+    );
+    const requestedRoot = item?.worktreeKey
+      ? normalizeRootKey(item.worktreeKey)
+      : this.sessions.selectedSession?.baseline
+        ? normalizeRootKey(this.sessions.selectedSession.baseline.repoRoot)
+        : undefined;
+    const requested = requestedRoot
+      ? active.find((context) => normalizeRootKey(context.repoRoot) === requestedRoot)
+      : undefined;
+    if (requested) {
+      return requested;
+    }
+    if (active.length === 0) {
+      void vscode.window.showInformationMessage(
+        'No active agent has a Git baseline for verification.'
+      );
+      return undefined;
+    }
+    if (active.length === 1) {
+      return active[0];
+    }
+    return (
+      await vscode.window.showQuickPick(
+        active.map((context) => ({
+          label: path.basename(context.repoRoot),
+          description: context.repoRoot,
+          context
+        })),
+        {
+          title: 'Select Physical Worktree to Verify',
+          placeHolder: 'Verification evidence is scoped to this worktree'
+        }
+      )
+    )?.context;
+  }
+
+  private invalidateEvidenceForUri(uri: vscode.Uri): void {
+    if (uri.scheme !== 'file') {
+      return;
+    }
+    for (const context of this.verification?.listContexts() ?? []) {
+      if (context.status === 'active' && isWithin(context.repoRoot, uri.fsPath)) {
+        this.verification?.invalidateContext(context.id);
+      }
+    }
+  }
+
+  private persistVerificationSnapshot(): void {
+    if (!this.workspaceState || !this.verification) {
+      return;
+    }
+    const snapshot = this.verification.snapshot();
+    const value = persistableVerificationStore({
+      version: VERIFICATION_STORE_VERSION,
+      contexts: snapshot.contexts,
+      runs: snapshot.runs,
+      diagnosticBaselines: snapshot.diagnosticBaselines
+    });
+    this.persistChain = this.persistChain
+      .catch(() => undefined)
+      .then(() => this.workspaceState!.update(VERIFICATION_STORE_KEY, value));
   }
 
   private applyWorktreeChanges(worktrees: readonly WorktreeChanges[]): void {
@@ -575,17 +823,24 @@ export class ReviewTreeProvider
             ]
           : [new ReviewTreeItem('message', 'No workspace changes')]
         : [new ReviewTreeItem('message', 'Git changes could not be read')];
-      const childItems = branchChanged
-        ? [
+      const packet = this.packetsByWorktree.get(
+        normalizeRootKey(baseline.repoRoot)
+      );
+      const evidenceItems = reviewPacketItems(packet);
+      const childItems = [
+        ...(branchChanged
+          ? [
             new ReviewTreeItem('message', 'Branch changed since agent launch', {
               description: `${branchLabel(baseline.branch, baseline.commit)} → ${branchLabel(
                 worktree.state.branch,
                 worktree.state.commit
               )} · captured baseline is stale`
-            }),
-            ...changeItems
+            })
           ]
-        : changeItems;
+          : []),
+        ...evidenceItems,
+        ...changeItems
+      ];
       this.changesByWorktree.set(worktree.key, childItems);
       this.changeCount += changes?.length ?? 0;
       this.changeGroups.push(
@@ -601,8 +856,8 @@ export class ReviewTreeProvider
                     worktree.state.commit
                   )}`
                 : branchLabel(worktree.state.branch, worktree.state.commit)
-            } · ${changes?.length ?? 0} changes`,
-            warning: branchChanged,
+            } · ${changes?.length ?? 0} changes${packetDescription(packet)}`,
+            warning: branchChanged || packetWarning(packet),
             tooltip: [
               baseline.repoRoot,
               `Agents: ${worktree.agentDetails.join(', ')}`,
@@ -610,7 +865,8 @@ export class ReviewTreeProvider
               `Current branch: ${worktree.state.branch} @ ${worktree.state.commit}`,
               ...(branchChanged
                 ? ['Warning: branch changed; the captured diff baseline is stale.']
-                : [])
+                : []),
+              ...packetTooltip(packet)
             ].join('\n')
           }
         )
@@ -678,12 +934,153 @@ export class ReviewTreeProvider
   }
 }
 
+interface SelectedVerificationTask {
+  readonly task: vscode.Task;
+  readonly kind: VerificationTaskKind;
+}
+
+async function pickVerificationTask(): Promise<SelectedVerificationTask | undefined> {
+  const allTasks = await vscode.tasks.fetchTasks();
+  const testTasks = allTasks.filter((task) => task.group === vscode.TaskGroup.Test);
+  let kind: VerificationTaskKind = 'test';
+  let candidates = testTasks;
+  if (testTasks.length === 0) {
+    if (allTasks.length === 0) {
+      void vscode.window.showInformationMessage(
+        'No VS Code workspace tasks are available. No verification was recorded.'
+      );
+      return undefined;
+    }
+    const choice = await vscode.window.showInformationMessage(
+      'No tasks declared in the VS Code Test group were found. A workspace task fallback is not assumed to be a test.',
+      'Choose Workspace Task Fallback'
+    );
+    if (choice !== 'Choose Workspace Task Fallback') {
+      return undefined;
+    }
+    kind = 'workspace-fallback';
+    candidates = allTasks;
+  }
+  const picked = await vscode.window.showQuickPick(
+    candidates.map((task) => ({
+      label: task.name,
+      description: task.source,
+      detail:
+        kind === 'test'
+          ? 'VS Code Test task'
+          : 'Workspace task fallback — not declared as a Test task',
+      task
+    })),
+    {
+      title:
+        kind === 'test'
+          ? 'Run Verification · VS Code Test Task'
+          : 'Run Verification · Workspace Task Fallback',
+      placeHolder: 'Cancel records no verification result'
+    }
+  );
+  return picked ? { task: picked.task, kind } : undefined;
+}
+
+function verificationTaskIdentity(
+  task: vscode.Task,
+  kind: VerificationTaskKind
+): VerificationTaskIdentity {
+  const scope = task.scope;
+  const scopeIdentity = typeof scope === 'object'
+    ? normalizeRootKey(scope.uri.fsPath)
+    : scope === vscode.TaskScope.Global
+      ? 'global'
+      : 'workspace';
+  return {
+    kind,
+    name: task.name,
+    source: task.source,
+    definitionType:
+      typeof task.definition.type === 'string'
+        ? task.definition.type
+        : 'unknown',
+    scope: scopeIdentity
+  };
+}
+
+async function observeTaskCompletion(task: vscode.Task): Promise<TaskCompletion> {
+  return new Promise((resolve) => {
+    let execution: vscode.TaskExecution | undefined;
+    let observedExecution: vscode.TaskExecution | undefined;
+    let exitCode: number | undefined;
+    let settled = false;
+    const matches = (candidate: vscode.TaskExecution): boolean => {
+      if (execution) {
+        return candidate === execution;
+      }
+      if (observedExecution) {
+        return candidate === observedExecution;
+      }
+      if (candidate.task === task) {
+        observedExecution = candidate;
+        return true;
+      }
+      return false;
+    };
+    const finish = (completion: TaskCompletion): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      processEnded.dispose();
+      taskEnded.dispose();
+      resolve(completion);
+    };
+    const processEnded = vscode.tasks.onDidEndTaskProcess((event) => {
+      if (matches(event.execution)) {
+        exitCode = event.exitCode;
+      }
+    });
+    const taskEnded = vscode.tasks.onDidEndTask((event) => {
+      if (matches(event.execution)) {
+        finish(exitCode === undefined ? {} : { exitCode });
+      }
+    });
+    void vscode.tasks.executeTask(task).then(
+      (started) => {
+        execution = started;
+        if (observedExecution && observedExecution !== started) {
+          finish({ launchFailed: true });
+        }
+      },
+      () => finish({ launchFailed: true })
+    );
+  });
+}
+
+function showVerificationOutcome(
+  outcome: import('./verification/verificationTypes').VerificationCheckOutcome
+): void {
+  switch (outcome) {
+    case 'passed':
+      void vscode.window.showInformationMessage(
+        'Verification task passed. Review readiness was refreshed.'
+      );
+      return;
+    case 'failed':
+      void vscode.window.showErrorMessage(
+        'Verification task failed. Open the task terminal for details.'
+      );
+      return;
+    default:
+      void vscode.window.showWarningMessage(
+        'Verification task ended without a known process exit. No success was recorded.'
+      );
+  }
+}
+
 async function loadWorktreeChanges(
   sessions: SessionManager
 ): Promise<WorktreeChanges[]> {
   const sessionsByWorktree = new Map<string, AgentSession[]>();
-  for (const session of sessions.list()) {
-    if (!session.baseline || !sessions.isOpen(session.id)) {
+  for (const session of sessions.history()) {
+    if (!session.baseline) {
       continue;
     }
     const key = path.resolve(session.baseline.repoRoot);
@@ -693,10 +1090,17 @@ async function loadWorktreeChanges(
   }
 
   return Promise.all(
-    [...sessionsByWorktree.entries()].map(async ([key, attachedSessions]) => {
+    [...sessionsByWorktree.entries()]
+      .filter(([, attachedSessions]) =>
+        attachedSessions.some((session) => sessions.isOpen(session.id))
+      )
+      .map(async ([key, attachedSessions]) => {
       const sorted = attachedSessions.sort(
-        (left, right) => right.createdAt - left.createdAt
+        (left, right) => left.createdAt - right.createdAt
       );
+      // One physical worktree has one review context. Keep the earliest valid
+      // launch baseline stable while more sessions attach; switching to the
+      // newest session would make already-reviewed changes disappear.
       const session = sorted[0];
       let changes: WorkspaceChange[] | undefined;
       let state: GitWorktreeState = {
@@ -726,7 +1130,7 @@ async function loadWorktreeChanges(
         changes,
         state
       };
-    })
+      })
   );
 }
 
@@ -769,6 +1173,158 @@ async function findFilesAcrossAgentRoots(
 function normalizeRootKey(value: string): string {
   const resolved = path.resolve(value);
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function reviewPacketItems(
+  packet: ReviewPacket | 'unavailable' | undefined
+): ReviewTreeItem[] {
+  if (!packet) {
+    return [
+      new ReviewTreeItem('evidence', 'Collecting review evidence…', {
+        description: 'Git and diagnostic evidence are loading'
+      })
+    ];
+  }
+  if (packet === 'unavailable') {
+    return [
+      new ReviewTreeItem('evidence', 'Review evidence unavailable', {
+        description: 'Collection failed; no readiness claim can be made',
+        tooltip:
+          'Lookout could not collect the bounded Git and diagnostic review packet.',
+        warning: true
+      })
+    ];
+  }
+  const readiness = packet.readiness;
+  const diff = packet.git.diff;
+  const commits = packet.git.commits;
+  const upstream = packet.git.upstream;
+  const conflicts = packet.git.conflicts;
+  const diagnostics = packet.diagnostics;
+  const readinessReasons = readiness.reasons.length > 0
+    ? readiness.reasons.join('; ')
+    : 'Required evidence is current';
+  const commitTooltip = commits.entries.length > 0
+    ? commits.entries
+        .map(
+          (commit) =>
+            `${commit.hash.slice(0, 7)} ${commit.subject} — ${commit.author}`
+        )
+        .join('\n')
+    : 'No commits since the captured baseline';
+  return [
+    new ReviewTreeItem(
+      'evidence',
+      `Verification ${readiness.state}`,
+      {
+        description: readinessReasons,
+        tooltip: [
+          `Attribution: ${packet.attribution} physical worktree`,
+          `Evidence collected: ${new Date(packet.collectedAt).toLocaleString()}`,
+          readinessReasons
+        ].join('\n'),
+        warning: readiness.state === 'failed'
+      }
+    ),
+    new ReviewTreeItem('evidence', 'Diff evidence', {
+      description: `${diff.files} files · +${diff.additions} −${diff.deletions} · ${diff.untrackedFiles} untracked`,
+      tooltip: [
+        `Baseline: ${packet.git.baseline.branch} @ ${packet.git.baseline.commit}`,
+        `Current: ${packet.git.branch} @ ${packet.git.commit}`,
+        `${diff.binaryFiles} binary files`,
+        diff.truncated ? 'File details are bounded and truncated.' : ''
+      ]
+        .filter(Boolean)
+        .join('\n'),
+      warning: packet.git.state !== 'complete' || packet.git.baseline.stale
+    }),
+    new ReviewTreeItem('evidence', 'Commits since baseline', {
+      description: `${commits.count}${commits.truncated ? '+' : ''}`,
+      tooltip: commitTooltip,
+      warning: commits.incomplete
+    }),
+    new ReviewTreeItem('evidence', 'Local upstream evidence', {
+      description: upstreamDescription(upstream),
+      tooltip:
+        upstream.state === 'available'
+          ? `Compared with the existing local tracking ref ${upstream.name}; no network fetch was performed.`
+          : 'No network fetch was performed.',
+      warning: upstream.state === 'unavailable'
+    }),
+    new ReviewTreeItem('evidence', 'Conflicts', {
+      description:
+        conflicts.count === 0
+          ? 'none detected'
+          : `${conflicts.count}${conflicts.truncated ? '+' : ''} paths`,
+      tooltip:
+        conflicts.count === 0
+          ? 'No unmerged index entries were detected.'
+          : conflicts.paths.join('\n'),
+      warning: conflicts.count > 0 || conflicts.truncated
+    }),
+    new ReviewTreeItem('evidence', 'Diagnostic delta', {
+      description: `${diagnostics.addedCount} added · ${diagnostics.removedCount} resolved · ${diagnostics.currentCount} current`,
+      tooltip: [
+        `Diagnostic baseline: ${diagnostics.state}`,
+        `${diagnostics.unchangedCount} unchanged`,
+        ...(diagnostics.issues.length > 0
+          ? [`Limits: ${diagnostics.issues.join(', ')}`]
+          : [])
+      ].join('\n'),
+      warning: diagnostics.state !== 'complete' || diagnostics.addedCount > 0
+    })
+  ];
+}
+
+function upstreamDescription(
+  upstream: ReviewPacket['git']['upstream']
+): string {
+  switch (upstream.state) {
+    case 'available':
+      return `${upstream.name} · ${upstream.ahead} ahead · ${upstream.behind} behind`;
+    case 'none':
+      return 'no local tracking ref';
+    case 'detached':
+      return 'detached HEAD';
+    case 'unavailable':
+      return 'unavailable';
+  }
+}
+
+function packetDescription(
+  packet: ReviewPacket | 'unavailable' | undefined
+): string {
+  if (!packet) {
+    return ' · evidence loading';
+  }
+  return packet === 'unavailable'
+    ? ' · evidence unavailable'
+    : ` · verification ${packet.readiness.state}`;
+}
+
+function packetWarning(
+  packet: ReviewPacket | 'unavailable' | undefined
+): boolean {
+  if (!packet) {
+    return false;
+  }
+  return packet === 'unavailable' || packet.readiness.state === 'failed';
+}
+
+function packetTooltip(
+  packet: ReviewPacket | 'unavailable' | undefined
+): string[] {
+  if (!packet) {
+    return ['Review evidence is still loading.'];
+  }
+  if (packet === 'unavailable') {
+    return ['Review evidence collection failed; readiness is unknown.'];
+  }
+  return [
+    `Verification: ${packet.readiness.state}`,
+    `Evidence: Git ${packet.git.state}, diagnostics ${packet.diagnostics.state}`,
+    `Attribution: ${packet.attribution}`
+  ];
 }
 
 function branchLabel(branch: string, commit: string): string {

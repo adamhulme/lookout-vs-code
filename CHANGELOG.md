@@ -2,6 +2,33 @@
 
 ## 0.1.0 — Unreleased
 
+- Open new agent terminals in VS Code's native terminal panel by default while
+  retaining editor-area terminals as an explicit setting.
+- Capture documented Codex and Claude provider session identity through
+  session-local hooks without reading transcripts, with visible identity health,
+  rotation safeguards, and duplicate-session conflict detection.
+- Migrate session persistence to a versioned store with a bounded,
+  metadata-only operational event ledger; live command text and optional
+  command output remain memory-only.
+- Add conservative provider adapters for capability discovery and safe direct
+  Codex/Claude resume and fork command construction.
+- Add bounded, abortable Git evidence collection for diff statistics, commits,
+  upstream state, conflicts, and stale or unstable baselines as the foundation
+  for verification-oriented review packets.
+- Add metadata-only Inbox and History views with unread navigation, safe
+  provider resume/fork, collision refusal, archive/unarchive, and bounded
+  retention.
+- Add a non-installing provider profile catalog and privacy-bounded session
+  templates for reusable folder, worktree, task, browser, and review recipes.
+- Add stable verification contexts, diagnostic hash baselines, freshness-aware
+  review packets, metadata-only verification-run persistence, and an explicit
+  native Test-task runner where only a current observed zero exit can produce a
+  ready claim.
+- Add Lookout Doctor and explicit sanitized support-bundle export, plus an
+  advisory cross-platform provider compatibility lab with deterministic fake
+  CLIs.
+- Add a passive Getting Started walkthrough covering profiles, native launch,
+  Inbox attention, Review, and provider continuity.
 - Only warn about uncommitted work when removing an agent. Clean commits made
   since launch no longer trigger the changes warning, and the prompt now makes
   clear that removing an agent does not delete worktree files or Git commits.

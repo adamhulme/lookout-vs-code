@@ -1,20 +1,34 @@
-LOOKOUT 0.1.0 — INTERACTIVE SMOKE TEST PLAN
-Plan written 2026-07-10 against commit b43bfcb. Record results in
-docs/sessions/2026-07-10-smoke.md (one line per numbered item).
+LOOKOUT 0.1.0 — INTERACTIVE RELEASE-CANDIDATE TEST PLAN
+Run this plan against the exact commit and VSIX proposed for release. Create a
+new dated record under docs/sessions/ and record the commit, VSIX SHA-256,
+platform versions, provider CLI versions, and one result per numbered item.
+The 2026-07-10 smoke report is historical and does not clear this gate.
 
-Already verified automatically — do not re-test manually:
-  npm run check green (34 unit tests, 11 files); the extension-host suite
-  covers 6 core-loop cases on minimum and Stable VS Code; npm run vsix packages;
-  zero multiTerm/paraterm/parapp remnants in code or manifest.
+Program scope and sequencing:
+  docs/plans/pre-release-program.md
+
+AUTOMATED EVIDENCE — capture fresh output in the dated release record:
+  - npm run check
+  - npm run test:integration
+  - npm run compat:providers
+  - npm run audit:runtime
+  - npm run verify:vsix
+Do not copy a historical test count into the result. CI currently exercises the
+fast gate on Linux, Windows, and macOS; the extension-host suite runs on Stable
+for all three and on the minimum supported VS Code on Linux. Automation does
+not replace the interactive checks below.
 
 SETUP (once)
-  - Desktop VS Code, plus the WSL remote as a second pass.
+  - Desktop VS Code, plus WSL, Remote SSH, and dev-container passes. Record an
+    explicit accepted limitation if a release candidate cannot cover a host.
+  - A multi-root workspace with two scratch repositories for the relevant
+    launch, review, and path-scoping checks.
   - Signed-in codex and claude CLIs; node on PATH.
   - A scratch git repo opened as a trusted workspace.
-  - Test BOTH install paths: F5 "Run Lookout" (Extension Development
-    Host), then npm run vsix -> Extensions: Install from VSIX. The
-     interactive installed-VSIX path has never been exercised (CLI packaging,
-     installation, and identity verification are automated).
+  - Test BOTH install paths: F5 "Run Lookout" (Extension Development Host),
+    then install the exact release-candidate VSIX in a disposable profile.
+    Packaging, CLI installation, and identity verification are automated; the
+    interactive installed-VSIX path is still a separate release gate.
 
 A. RENAME INTEGRITY (~5 min)
   1. Activity bar shows a Lookout icon; Agents, Review, and Usage
@@ -29,22 +43,22 @@ A. RENAME INTEGRITY (~5 min)
 
 B. LAUNCH AND LAYOUT (~10 min)
   5. "+" picker offers Codex / Claude Code / Custom. Launch two Codex
-     and one Claude: terminals open in editor column two; column one
-     stays free for review.
+     and one Claude: terminals open in the native terminal panel by default,
+     leaving the editor area free for code and review.
   6. Terminal tab names read "Lookout: <label> [<id>]"; tree rows show
      directory - branch - state.
   7. Split an agent (inline action): native split beside its parent,
      not a new column.
-  8. Set lookout.terminals.location = panel, launch -> lands in the
-     panel. Reset to editor.
+  8. Set lookout.terminals.location = editor, launch -> lands in editor
+     column two with column one free for review. Reset to panel.
   9. Launch with lookout.codex.command = "nonexistent-cli": no dead
      terminal is created; guided help offers the command setting.
 
 C. LIFECYCLE, ATTENTION, AND THE BELL (~20 min — the heart of it)
  10. Claude: send a prompt -> row shows working. Trigger a permission
      prompt -> attention + notification with "Focus Agent". Let a
-     turn finish while another terminal is focused -> "waiting for
-     input" + unread dot; focusing clears unread.
+     turn finish while another terminal is focused -> calm finished/idle
+     state + unread dot; focusing clears unread.
  11. Codex first launch: the one-time /hooks trust review flow
      appears as designed (D8) — Lookout instructs, never bypasses.
      Before trusting, turn-complete attention still arrives via the
@@ -54,8 +68,9 @@ C. LIFECYCLE, ATTENTION, AND THE BELL (~20 min — the heart of it)
      that Codex needs permission or rings the attention bell.
  12. Delegated agents: have Claude or Codex spawn a subagent -> row
      shows delegated-agent state. Foreground stop with a live child
-     -> background, not waiting. Last child done + foreground stopped
-     -> attention. Permission requests outrank child progress (D3).
+     -> background, not waiting. After the last child drains, a genuine
+     input/permission wait -> attention while a clean turn end -> idle.
+     Permission requests outrank child progress (D3).
  13. Bell and notification: with the window unfocused, let the terminal
      that was last active hit attention -> both are delivered and the
      row remains unread. Repeat while a different terminal is focused.
@@ -133,10 +148,47 @@ H. TRUST (~5 min)
      readable; launching agents and running tasks is blocked with the
      trust warning; the three command settings are shown restricted.
 
+I. INBOX, HISTORY, PROFILES, AND TEMPLATES (~15 min)
+ 32. Configure Agent Profiles reports direct Codex/Claude executables as
+     detected, missing executables as unavailable, and wrapper commands as
+     launch-only without claiming identity/resume/fork support.
+ 33. Inbox shows fixed operational labels for lifecycle/attention events,
+     action-required unread events first. Next/Previous Unread cycles and
+     focusing the session clears only its event read state. No prompt, hook
+     message, command text, tool output, or transcript path appears.
+ 34. Close a managed session after its SessionStart identity arrives. History
+     marks it resumable; Custom/adopted rows remain terminal-only. Resume opens
+     the provider's native continuation in the original folder. A duplicate
+     live resume is refused with Focus Existing / Fork Instead. Fork obtains a
+     distinct provider ID. Archive/unarchive changes Lookout metadata only.
+ 35. Create and relaunch both shared-folder and isolated-worktree templates.
+     Tasks, browser URL, and review layout run only after explicit launch.
+     Remove a configured profile/executable: launch is refused with guidance.
+     Inspect extension storage and confirm templates contain no command, args,
+     environment, prompt, token, or credentials.
+
+J. DOCTOR, SUPPORT, AND VERIFICATION HONESTY (~10 min)
+ 36. Run Lookout Doctor locally and on every remote execution host. It reports
+     trust, coarse remote kind, Git/Node, profiles, lifecycle/bridge, provider
+     identity, usage, and baseline availability using fixed states. Session
+     scopes are ordinals only; no user labels or IDs appear.
+ 37. Export a sanitized support bundle. Search it for the home path, every
+     workspace path, Lookout/provider IDs, configured commands, URLs and query
+     tokens, prompts, transcript paths, event messages, stdout/stderr, and
+     credentials: none may appear. Canceling the picker writes nothing and no
+     upload occurs.
+ 38. Review diff statistics, commits/upstream/conflicts, diagnostic delta, and
+     verification readiness remain scoped to the physical worktree and earliest
+     attached baseline. Attach a second shared-worktree agent and close the
+     first: the baseline must not jump. Switch/rewrite HEAD or make evidence
+     partial: readiness becomes stale/incomplete, never a false green claim.
+
 EXIT CRITERIA (ROADMAP release gates)
   - launch -> monitor -> jump -> review loop passes interactively
   - no provider limit shown as zero when it is unknown
   - restored sessions never silently claim a working attention bridge
   - no user auth file or terminal output is read
+  - provider and Lookout session IDs remain distinct; duplicate resume is refused
+  - support export passes the adversarial redaction check
   - shared-worktree changes are never misattributed to one agent
   - package, CI, and the documented manual matrix are green

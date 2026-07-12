@@ -1,0 +1,13 @@
+{
+  "session_id": "0190f4aa-0f98-7000-8000-111111111111",
+  "source": "resume",
+  "cwd": "/workspace/project",
+  "hook_event_name": "SessionStart",
+  "model": "gpt-codex",
+  "transcript_path": "/private/codex/transcript.jsonl",
+  "prompt": "do not persist this prompt",
+  "last_assistant_message": "do not persist this answer",
+  "future_provider_field": {
+    "secret": "do not persist unknown fields"
+  }
+}

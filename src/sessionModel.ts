@@ -22,6 +22,9 @@ export function createSession(
     kind,
     label: label.trim(),
     command: command.trim(),
+    ...(kind === 'codex' || kind === 'claude'
+      ? { providerCommand: command.trim() }
+      : {}),
     cwd,
     status: 'starting',
     createdAt: now,
@@ -31,7 +34,13 @@ export function createSession(
     unread: false,
     backgroundAgents: [],
     runningCommands: [],
-    foregroundState: 'unknown'
+    foregroundState: 'unknown',
+    providerSessions: [],
+    lineage: { operation: 'new' },
+    integration: {
+      lifecycle: kind === 'custom' ? 'disabled' : 'awaiting-first-hook',
+      hookTrust: kind === 'custom' ? 'not-applicable' : 'unknown'
+    }
   };
 }
 

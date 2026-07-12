@@ -72,6 +72,12 @@ suite('Lookout extension-host integration', () => {
     }
   });
 
+  test('runs the privacy-safe Doctor through the registered command', async () => {
+    await assert.doesNotReject(
+      Promise.resolve(vscode.commands.executeCommand('lookout.runDoctor'))
+    );
+  });
+
   test('launches a native terminal with a Git baseline and authenticated bridge', () => {
     assert.equal(normalizeFsPath(session.baseline?.repoRoot ?? ''), normalizeFsPath(workspaceRoot));
     assert.equal(session.bridgeAvailable, true);
@@ -122,6 +128,52 @@ suite('Lookout extension-host integration', () => {
     );
     assert.equal(api.sessions.get(session.id)?.unread, false);
     observer.dispose();
+  });
+
+  test('binds provider identity separately from the Lookout session ID', async () => {
+    const managed = await api.sessions.launch({
+      kind: 'codex',
+      label: 'Provider Identity',
+      command: 'echo provider-identity',
+      cwd: workspaceRoot
+    });
+    const managedTerminal = await waitForValue(
+      () =>
+        vscode.window.terminals.find(
+          (candidate) =>
+            terminalEnvironment(candidate).LOOKOUT_SESSION_ID === managed.id
+        ),
+      'Lookout did not create the provider identity terminal'
+    );
+
+    await postAgentEvent(managedTerminal, {
+      kind: 'provider-session',
+      sessionId: managed.id,
+      provider: 'codex',
+      providerSessionId: 'codex-provider-session-1',
+      providerSessionSource: 'startup'
+    });
+    await waitFor(
+      () =>
+        api.sessions.get(managed.id)?.providerSessions.at(-1)?.id ===
+        'codex-provider-session-1',
+      'The provider session identity was not bound'
+    );
+    const updated = api.sessions.get(managed.id);
+    assert.equal(updated?.id, managed.id);
+    assert.equal(updated?.integration.lifecycle, 'healthy');
+    assert.ok(
+      api.sessions
+        .eventsFor(managed.id)
+        .some((event) => event.kind === 'identity-observed')
+    );
+
+    managedTerminal.dispose();
+    await waitFor(
+      () => api.sessions.get(managed.id)?.status === 'closed',
+      'The provider identity terminal did not close'
+    );
+    await api.sessions.close(managed.id);
   });
 
   test('requests a native sibling split relative to its parent', async () => {

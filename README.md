@@ -29,11 +29,19 @@ terminal emulator or code viewer inside a webview.
   delegated-agent activity, authorization checks, finished turns, and genuine
   waits for input. Unread badges, status-bar state, notifications, and an optional
   bell make background work visible.
+- **Inbox and continuity** — triage a bounded, metadata-only event ledger, move
+  through unread events, browse closed history, and explicitly resume or fork
+  supported provider-owned sessions without reading their transcripts.
+- **Profiles and templates** — detect direct provider CLIs, explain degraded
+  wrapper capabilities, and save reusable launch recipes without persisting raw
+  commands, arguments, environment variables, prompts, or credentials.
 - **Review** — open each session's Git changes as native diffs against its
   launch commit, grouped by worktree with branch-switch warnings and separately
   classified plans and docs. Diagnostics, Tasks, Test Explorer, debugging,
   Source Control, recent images, and a local browser stay VS Code-owned
-  surfaces, one step away.
+  surfaces, one step away. Bounded Git/diagnostic evidence and an explicit
+  native Task-backed verification run make ready/failed/stale claims visible
+  without parsing terminal output.
 - **Usage Limits** — show authoritative Codex and Claude account windows and
   reset times. Unknown, stale, unsupported, and signed-out states stay distinct
   from zero usage.
@@ -61,8 +69,9 @@ provider's own CLI before relying on lifecycle or usage information.
 2. Open a trusted Git workspace and select the **Lookout** icon in the Activity
    Bar.
 3. In **Agents**, select `+`, choose Codex, Claude Code, or Custom, then choose a
-   working folder. New terminals open in the editor area by default; change
-   `lookout.terminals.location` to `panel` if preferred.
+   working folder. New terminals open in the native terminal panel by default;
+   change `lookout.terminals.location` to `editor` if editor-area terminals fit
+   your layout better.
 4. Give each session a useful label, then let agents work in parallel. Select a
    row or use **Lookout: Focus Next Agent Needing Attention** to jump directly to
    the terminal that needs you.
@@ -84,7 +93,12 @@ modifies your user or repository Claude settings.
 | `Lookout: Adopt Existing Terminal as Agent…` | Add an existing native terminal to the Agents view. |
 | `Lookout: Focus Agent…` | Jump to any named agent. |
 | `Lookout: Focus Next Agent Needing Attention` | Triage the next unread session. |
+| `Lookout: Browse Agent History` | Inspect resumable and terminal-only Lookout records. |
+| `Lookout: Launch Agent from Template…` | Recreate a saved profile/folder/worktree/review recipe. |
 | `Lookout: Open Review Layout` | Restore a two-column agent/review layout. |
+| `Lookout: Run Verification Task…` | Run a native Test task and bind its observed exit to current review evidence. |
+| `Lookout: Run Doctor` | Inspect trust, provider, lifecycle, usage, remote-host, and Git health. |
+| `Lookout: Export Sanitized Support Bundle…` | Explicitly save a redacted, identifier-free diagnostic bundle. |
 | `Lookout: Configure Attention Sound` | Open the bell enablement and volume settings. |
 | `Lookout: Open Browser` | Open a local URL in VS Code's browser when available. |
 
@@ -104,7 +118,7 @@ The most common settings are:
   `lookout.claude.lifecycleIntegration` — session-local lifecycle hooks;
 - `lookout.usage.codex.enabled` and `lookout.usage.claude.enabled` — usage
   providers and UI;
-- `lookout.terminals.location` — `editor` or `panel`;
+- `lookout.terminals.location` — `panel` (default) or `editor`;
 - `lookout.notifyOnAttention`, `lookout.notifyOnTurnComplete`, and
   `lookout.notifyOnAgentExit` — notification behavior;
 - `lookout.attentionSound.enabled` and `lookout.attentionSound.volume` — the
@@ -128,6 +142,12 @@ Lifecycle events use a random bearer token over a size-limited HTTP server bound
 only to `127.0.0.1`; custom agent commands are not persisted. Workspace-provided
 command settings are restricted in untrusted workspaces, and execution commands
 are disabled until the workspace is trusted.
+
+Lookout persists opaque provider session IDs only when documented lifecycle
+hooks report them. Its bounded event ledger stores fixed operational event kinds
+and read state, never hook messages, prompts, command text, tool output, or
+transcript paths. Support export is an explicit command and passes through an
+allow-list plus defensive path, token, URL, and identifier redaction.
 
 The agent CLIs you launch remain separate software with their own network and
 data-handling behavior. See [PRIVACY.md](PRIVACY.md) for exactly what Lookout
@@ -164,12 +184,13 @@ skill pack. Lookout does not bundle, install, or update it.
 npm ci
 npm run check
 npm run test:integration
+npm run compat:providers
 npm run vsix
 ```
 
 The extension-host suite exercises activation, terminal launch and splitting,
 authenticated attention routing, Git review baselines, and terminal closure.
-CI runs it against both VS Code 1.96.0 and Stable. See
+CI runs Stable on Linux, Windows, and macOS, plus VS Code 1.96.0 on Linux. See
 [docs/TESTING.md](docs/TESTING.md) for test details and
 [docs/RELEASE.md](docs/RELEASE.md) for the release checklist.
 
@@ -179,6 +200,7 @@ in Run and Debug, and press `F5`.
 ## Project records
 
 - [Product and architecture decisions](docs/DECISIONS.md)
+- [Pre-release product program](docs/plans/pre-release-program.md)
 - [Implementation roadmap](docs/ROADMAP.md)
 - [Interactive release test plan](docs/TESTPLAN.txt)
 - [Product and technical research](docs/RESEARCH.md)

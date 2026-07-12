@@ -79,6 +79,8 @@
     "clean": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\"",
     "lint": "eslint src test",
     "test": "npm run compile && node --test out/test/**/*.test.js",
+    "test:provider-compat": "npm run compile && node --test out/test/providerCompatibility.test.js",
+    "compat:providers": "node scripts/provider-compat.mjs",
     "test:integration": "npm run compile && vscode-test --label integration --fail-zero --forbid-only",
     "verify:vsix": "npm run vsix && node scripts/verify-vsix.mjs",
     "check": "npm run lint && npm test",
@@ -107,6 +109,42 @@
         "category": "Lookout",
         "enablement": "isWorkspaceTrusted",
         "icon": "$(add)"
+      },
+      {
+        "command": "lookout.configureProfiles",
+        "title": "Configure Agent Profiles",
+        "category": "Lookout",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "lookout.runDoctor",
+        "title": "Run Doctor",
+        "category": "Lookout",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "lookout.exportSupportBundle",
+        "title": "Export Sanitized Support Bundle…",
+        "category": "Lookout",
+        "icon": "$(export)"
+      },
+      {
+        "command": "lookout.createTemplate",
+        "title": "Create Session Template…",
+        "category": "Lookout",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "lookout.launchTemplate",
+        "title": "Launch Agent from Template…",
+        "category": "Lookout",
+        "enablement": "isWorkspaceTrusted",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "lookout.deleteTemplate",
+        "title": "Delete Session Template…",
+        "category": "Lookout"
       },
       {
         "command": "lookout.launchCodex",
@@ -191,6 +229,56 @@
         "command": "lookout.focusNextAttention",
         "title": "Focus Next Agent Needing Attention",
         "category": "Lookout"
+      },
+      {
+        "command": "lookout.focusNextUnread",
+        "title": "Focus Next Unread Agent Event",
+        "category": "Lookout",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "lookout.focusPreviousUnread",
+        "title": "Focus Previous Unread Agent Event",
+        "category": "Lookout",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "lookout.resumeSession",
+        "title": "Resume Provider Session",
+        "category": "Lookout",
+        "enablement": "isWorkspaceTrusted",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "lookout.forkSession",
+        "title": "Fork Provider Session",
+        "category": "Lookout",
+        "enablement": "isWorkspaceTrusted",
+        "icon": "$(git-branch-create)"
+      },
+      {
+        "command": "lookout.archiveSession",
+        "title": "Archive Lookout History",
+        "category": "Lookout",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "lookout.unarchiveSession",
+        "title": "Unarchive Lookout History",
+        "category": "Lookout",
+        "icon": "$(history)"
+      },
+      {
+        "command": "lookout.browseHistory",
+        "title": "Browse Agent History",
+        "category": "Lookout",
+        "icon": "$(history)"
+      },
+      {
+        "command": "lookout.deleteHistory",
+        "title": "Delete Closed Lookout History",
+        "category": "Lookout",
+        "icon": "$(trash)"
       },
       {
         "command": "lookout.pickSession",
@@ -289,6 +377,13 @@
         "icon": "$(run)"
       },
       {
+        "command": "lookout.runVerification",
+        "title": "Run Verification Task…",
+        "category": "Lookout",
+        "enablement": "isWorkspaceTrusted",
+        "icon": "$(verified)"
+      },
+      {
         "command": "lookout.startDebug",
         "title": "Start Debugging…",
         "category": "Lookout",
@@ -353,6 +448,16 @@
           "icon": "$(terminal)"
         },
         {
+          "id": "lookout.inbox",
+          "name": "Inbox",
+          "icon": "$(inbox)"
+        },
+        {
+          "id": "lookout.history",
+          "name": "History",
+          "icon": "$(history)"
+        },
+        {
           "id": "lookout.review",
           "name": "Review",
           "icon": "$(preview)"
@@ -409,6 +514,22 @@
         {
           "command": "lookout.openReviewItem",
           "when": "false"
+        },
+        {
+          "command": "lookout.resumeSession",
+          "when": "false"
+        },
+        {
+          "command": "lookout.forkSession",
+          "when": "false"
+        },
+        {
+          "command": "lookout.archiveSession",
+          "when": "false"
+        },
+        {
+          "command": "lookout.unarchiveSession",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -448,6 +569,16 @@
           "group": "navigation@6"
         },
         {
+          "command": "lookout.configureProfiles",
+          "when": "view == lookout.sessions",
+          "group": "navigation@7"
+        },
+        {
+          "command": "lookout.launchTemplate",
+          "when": "view == lookout.sessions && isWorkspaceTrusted",
+          "group": "navigation@2.5"
+        },
+        {
           "command": "lookout.openBrowser",
           "when": "view == lookout.review",
           "group": "navigation@1"
@@ -458,9 +589,14 @@
           "group": "navigation@2"
         },
         {
-          "command": "lookout.runTask",
+          "command": "lookout.runVerification",
           "when": "view == lookout.review && isWorkspaceTrusted",
           "group": "navigation@3"
+        },
+        {
+          "command": "lookout.runTask",
+          "when": "view == lookout.review && isWorkspaceTrusted",
+          "group": "navigation@3.5"
         },
         {
           "command": "lookout.refreshReview",
@@ -470,6 +606,21 @@
         {
           "command": "lookout.refreshUsage",
           "when": "view == lookout.usage",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lookout.focusPreviousUnread",
+          "when": "view == lookout.inbox",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lookout.focusNextUnread",
+          "when": "view == lookout.inbox",
+          "group": "navigation@2"
+        },
+        {
+          "command": "lookout.deleteHistory",
+          "when": "view == lookout.history",
           "group": "navigation@1"
         }
       ],
@@ -495,6 +646,11 @@
           "command": "lookout.runTestTask",
           "when": "view == lookout.review && isWorkspaceTrusted",
           "group": "lookout@2"
+        },
+        {
+          "command": "lookout.runVerification",
+          "when": "view == lookout.review && viewItem == lookout.reviewWorktree && isWorkspaceTrusted",
+          "group": "lookout@2.5"
         },
         {
           "command": "lookout.startDebug",
@@ -535,9 +691,83 @@
           "command": "lookout.closeSession",
           "when": "view == lookout.sessions && viewItem == lookout.session",
           "group": "lookout@5"
+        },
+        {
+          "command": "lookout.resumeSession",
+          "when": "view == lookout.history && viewItem == lookout.historySession.resumable && isWorkspaceTrusted",
+          "group": "inline@1"
+        },
+        {
+          "command": "lookout.forkSession",
+          "when": "view == lookout.history && viewItem == lookout.historySession.resumable && isWorkspaceTrusted",
+          "group": "lookout@1"
+        },
+        {
+          "command": "lookout.archiveSession",
+          "when": "view == lookout.history && (viewItem == lookout.historySession.resumable || viewItem == lookout.historySession.terminal-only || viewItem == lookout.historySession.closed)",
+          "group": "lookout@2"
+        },
+        {
+          "command": "lookout.unarchiveSession",
+          "when": "view == lookout.history && viewItem == lookout.historySession.archived",
+          "group": "lookout@2"
         }
       ]
     },
+    "walkthroughs": [
+      {
+        "id": "lookout.gettingStarted",
+        "title": "Coordinate terminal agents with Lookout",
+        "description": "Detect a provider, launch or resume a real terminal session, route attention, and review work with explicit evidence.",
+        "steps": [
+          {
+            "id": "lookout.walkthrough.profiles",
+            "title": "Check your agent profiles",
+            "description": "[Inspect detected Codex, Claude Code, and generic terminal profiles](command:lookout.configureProfiles). Lookout never installs or authenticates a provider for you.",
+            "media": {
+              "image": "resources/icon.png",
+              "altText": "Lookout icon"
+            }
+          },
+          {
+            "id": "lookout.walkthrough.launch",
+            "title": "Launch a native agent terminal",
+            "description": "[Launch an agent](command:lookout.launchAgent) or [create a reusable session template](command:lookout.createTemplate). Provider UX stays in its real terminal.",
+            "media": {
+              "image": "resources/icon.png",
+              "altText": "Lookout agent launch"
+            }
+          },
+          {
+            "id": "lookout.walkthrough.attention",
+            "title": "Triage explicit agent events",
+            "description": "Use the **Inbox** and [focus the next unread event](command:lookout.focusNextUnread). Lookout uses provider hooks and never scrapes terminal output.",
+            "media": {
+              "image": "resources/icon.png",
+              "altText": "Lookout attention inbox"
+            }
+          },
+          {
+            "id": "lookout.walkthrough.review",
+            "title": "Review and verify in VS Code",
+            "description": "[Open the review layout](command:lookout.openReviewLayout) for native diffs, Problems, Tasks, tests, debugging, and browser tools.",
+            "media": {
+              "image": "resources/icon.png",
+              "altText": "Lookout review workflow"
+            }
+          },
+          {
+            "id": "lookout.walkthrough.continuity",
+            "title": "Resume provider-owned work",
+            "description": "[Browse Lookout history](command:lookout.browseHistory) to resume supported provider sessions without reading their transcripts.",
+            "media": {
+              "image": "resources/icon.png",
+              "altText": "Lookout session history"
+            }
+          }
+        ]
+      }
+    ],
     "configuration": {
       "title": "Lookout",
       "properties": {
@@ -581,7 +811,7 @@
             "Use the main editor area for terminal agents.",
             "Use VS Code's terminal panel."
           ],
-          "default": "editor",
+          "default": "panel",
           "description": "Where new agent terminals open."
         },
         "lookout.notifyOnAgentExit": {

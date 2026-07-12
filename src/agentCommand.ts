@@ -82,6 +82,10 @@ export function withCodexLifecycleIntegration(
     overrides.push(
       'features.hooks=true',
       codexHookOverride(
+        'SessionStart',
+        hookCommand(helperPath, 'session-start', undefined, hookShell)
+      ),
+      codexHookOverride(
         'UserPromptSubmit',
         hookCommand(helperPath, 'running', 'Codex is working', hookShell)
       ),

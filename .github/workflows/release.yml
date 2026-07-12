@@ -1,0 +1,218 @@
+name: Release candidate and gated publication
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing v<package-version> tag to check out and package
+        required: true
+        type: string
+      publish_marketplace:
+        description: Publish the verified artifact to Visual Studio Marketplace
+        required: true
+        default: false
+        type: boolean
+      publish_open_vsx:
+        description: Publish the verified artifact to Open VSX
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  build-artifact:
+    name: Verify and package once
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-name: ${{ steps.prepare.outputs.artifact_name }}
+      sha256: ${{ steps.prepare.outputs.sha256 }}
+      version: ${{ steps.prepare.outputs.version }}
+      vsix-file: ${{ steps.prepare.outputs.vsix_file }}
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Confirm the checkout is the requested tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git describe --tags --exact-match)" = "$RELEASE_TAG"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run static checks and fast tests
+        run: npm run check
+
+      - name: Run extension-host tests
+        run: xvfb-run -a npm run test:integration
+
+      - name: Run deterministic provider compatibility tests
+        run: npm run test:provider-compat
+
+      - name: Audit shipped dependencies
+        run: npm run audit:runtime
+
+      - name: Inspect the proposed package contents
+        run: node node_modules/@vscode/vsce/vsce ls --tree --no-dependencies
+
+      # This is the only packaging command in the workflow. Publisher jobs only
+      # download and verify its bytes; they never run package or prepublish.
+      - name: Package VSIX exactly once
+        run: npm run vsix
+
+      - name: Record candidate identity and SHA-256
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/release-artifact.mjs prepare \
+            --tag "$RELEASE_TAG" \
+            --commit "$(git rev-parse HEAD)" \
+            --output release-artifact \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Upload immutable release candidate
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.prepare.outputs.artifact_name }}
+          path: release-artifact/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+
+      - name: Summarize the candidate
+        shell: bash
+        run: |
+          {
+            echo '## Release candidate'
+            echo
+            echo '- Tag: `'$RELEASE_TAG'`'
+            echo '- Version: `${{ steps.prepare.outputs.version }}`'
+            echo '- VSIX: `${{ steps.prepare.outputs.vsix_file }}`'
+            echo '- SHA-256: `${{ steps.prepare.outputs.sha256 }}`'
+            echo '- Artifact ID: `${{ steps.upload.outputs.artifact-id }}`'
+            echo
+            echo 'Tag-triggered runs do not publish. Manual publication remains subject to environment approval.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish-marketplace:
+    name: Publish exact bytes to Visual Studio Marketplace
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_marketplace }}
+    needs: build-artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: visual-studio-marketplace
+      url: https://marketplace.visualstudio.com/items?itemName=adamh.lookout
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the release tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install the locked Marketplace client
+        run: npm ci --ignore-scripts
+
+      - name: Download the build job artifact by ID
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.build-artifact.outputs.artifact-id }}
+          path: release-artifact
+          merge-multiple: true
+
+      - name: Verify the downloaded VSIX
+        id: verify
+        run: >-
+          node scripts/release-artifact.mjs verify
+          --directory release-artifact
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Sign in to Microsoft Entra with GitHub OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Publish the verified VSIX without repackaging
+        run: >-
+          node node_modules/@vscode/vsce/vsce publish
+          --azure-credential
+          --packagePath "${{ steps.verify.outputs.vsix_path }}"
+
+  publish-open-vsx:
+    name: Publish exact bytes to Open VSX
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_open_vsx }}
+    needs: build-artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: open-vsx
+      url: https://open-vsx.org/extension/adamh/lookout
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the release tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download the build job artifact by ID
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.build-artifact.outputs.artifact-id }}
+          path: release-artifact
+          merge-multiple: true
+
+      - name: Verify the downloaded VSIX
+        id: verify
+        run: >-
+          node scripts/release-artifact.mjs verify
+          --directory release-artifact
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Publish the verified VSIX without repackaging
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: npx --yes ovsx@1.0.2 publish "${{ steps.verify.outputs.vsix_path }}"

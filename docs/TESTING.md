@@ -25,6 +25,7 @@ disabled, and verifies:
 - native terminal creation, panel placement, Git baseline capture, and bridge
   credentials;
 - authenticated lifecycle attention, unread state, and attention navigation;
+- provider identity binding without conflating provider and Lookout IDs;
 - native sibling-split requests relative to the parent terminal;
 - changed-file discovery and virtual Git-baseline content;
 - closed-terminal state and session removal.
@@ -39,10 +40,25 @@ npm run verify:vsix
 This catches packaging and installability failures, but it does not replace the
 visual installed-VSIX walkthrough in the manual checks below.
 
-CI runs the installability check after the Stable Linux extension-host suite.
+CI runs the fast gate and packaging on Linux, Windows, and macOS. It runs the
+extension-host suite against Stable on all three platforms, against the minimum
+declared VS Code version on Linux, and performs the installed-identity check on
+the Stable Linux artifact. Set `LOOKOUT_VSCODE_VERSION` to exercise another
+supported VS Code version locally.
 
-Set `LOOKOUT_VSCODE_VERSION` to run another supported VS Code version. CI runs
-both the minimum declared version and Stable.
+Provider compatibility has two additional layers:
+
+```bash
+npm run test:provider-compat
+npm run compat:providers
+```
+
+The first uses deterministic fake Codex and Claude CLIs to exercise sanitized
+lifecycle, resume, and fork behavior without accounts or a network. The second
+performs bounded, unauthenticated help/version/surface inspection against the
+installed CLIs and writes only redacted advisory output. A scheduled three-OS
+workflow uploads those reports but does not block normal CI when a provider
+changes or an installer is temporarily unavailable.
 
 ## Manual release checks
 
@@ -50,4 +66,9 @@ Automation cannot reliably judge whether audio is audible, whether a split is
 visually placed as intended by every VS Code layout, or whether live Codex and
 Claude accounts still match their provider-owned hook, trust, authentication,
 and quota interfaces. Keep those checks, plus WSL/Remote behavior and the final
-installed-VSIX walkthrough, in the interactive smoke matrix.
+installed-VSIX walkthrough, in the interactive smoke matrix. The latest
+historical smoke report is not evidence that the current release-candidate
+matrix passed; create a new dated result for the exact candidate.
+
+The larger compatibility, remote-host, and release-hardening sequence is
+tracked in the [pre-release product program](plans/pre-release-program.md).

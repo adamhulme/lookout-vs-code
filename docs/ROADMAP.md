@@ -10,11 +10,17 @@ launch several agents → work in VS Code → see attention/finish state → jum
 
 Lookout is a terminal-native control plane for parallel coding work, not a replacement chat client. Its durable advantage is the complete loop around an agent: launch a real CLI session, route attention quickly, retain trustworthy worktree context, and review, test, debug, and run the result in VS Code's native surfaces.
 
-The implementation plan is in [the agent-cockpit plan](plans/agent-cockpit.md). It orders compatibility, session visibility, continuity, and isolated-worktree change history behind the core loop, without storing terminal transcripts or weakening the existing attribution and privacy guarantees.
+The complete pre-release sequence is in the
+[pre-release product program](plans/pre-release-program.md). The earlier
+[agent-cockpit plan](plans/agent-cockpit.md) remains useful product context. The
+program orders compatibility, session visibility, continuity, verification,
+and release hardening without storing terminal transcripts or weakening the
+existing attribution and privacy guarantees.
 
 ## Current checkpoint
 
-- [x] Native editor-area Codex, Claude, and custom terminals.
+- [x] Native panel and editor-area Codex, Claude, and custom terminals, with the
+  terminal panel as the first-run default.
 - [x] Provider picker from the Agents `+` action.
 - [x] Native terminal splits and fast focus picker/attention jump.
 - [x] Stable session metadata and terminal reattachment by injected ID.
@@ -30,8 +36,8 @@ The implementation plan is in [the agent-cockpit plan](plans/agent-cockpit.md). 
 - [x] Recently changed plans/docs classified separately and grouped by open agent worktree, plus optional recent images, diagnostics, Tasks, SCM, and browser commands.
 - [x] Codex and Claude account usage windows with reset times/stale states.
 - [x] User-configurable Spark quota and recent-image visibility, both quiet by default.
-- [x] Lint, strict TypeScript, eleven automated unit-test files, cross-platform
-  CI, extension-host coverage, and clean VSIX packaging.
+- [x] Lint, strict TypeScript, automated domain tests, cross-platform CI,
+  extension-host coverage, and clean VSIX packaging.
 - [x] Initial interactive Extension Development Host review.
 - [x] Deep product and extension namespace rename to Parful / `parful.*` / `PARFUL_*` before publication.
 - [x] Cross-worktree Compound Engineering artifact discovery and canonical path labels.
@@ -45,14 +51,19 @@ The implementation plan is in [the agent-cockpit plan](plans/agent-cockpit.md). 
 3. [x] Let every new-agent flow choose a folder outside the current workspace.
 4. [x] Classify text plans such as `docs/TESTPLAN.txt` under Plans & Docs by default.
 5. [x] Rework Plans & Docs around active-session changes and honest worktree-level attribution; stop showing unrelated pre-existing documents.
-6. [x] Ring for unattended completion/exit events and make mute state, volume configuration, and sound testing discoverable; manually retest the WSL backend.
+6. [x] Ring for unattended completion/exit events and make mute state, volume
+   configuration, and sound testing discoverable. The current WSL backend still
+   requires release-candidate retesting in `TESTPLAN.txt`.
 7. [x] Clarify command-not-found through guided missing-executable settings help rather than treating shell output as a VS Code diagnostic.
 8. [x] Investigate external-agent discovery: VS Code exposes neither terminal commands nor changing cwd through its public API, so provide explicit terminal adoption without output scraping.
    - [x] Make adoption discoverable from terminal context menus and the empty Agents view; reuse the shell-integration cwd when VS Code provides it.
-9. [x] Put the remove action inline beside split; rerun the skipped custom-hook and restored-custom-session cases.
-10. Activate the parent terminal before requesting a native sibling split; manually retest placement in editor and panel modes.
-11. [x] Rerun the full matrix in `TESTPLAN.txt`. Clearing the release gates
-    remains contingent on its recorded results.
+9. [x] Put the remove action inline beside split. The custom-hook and restored-
+   custom-session cases remain in the release-candidate matrix.
+10. [x] Activate the parent terminal before requesting a native sibling split.
+    Placement in editor and panel modes still requires interactive retesting.
+11. [ ] Rerun the full matrix in `TESTPLAN.txt` against the release candidate,
+    including the installed VSIX. The historical smoke report does not clear
+    this gate.
 
 ## Then: make the first stranger's run succeed
 
@@ -60,25 +71,35 @@ The implementation plan is in [the agent-cockpit plan](plans/agent-cockpit.md). 
 - [x] Per-provider launch and usage enablement so Claude-only users are not shown `Codex —` and no unused `codex app-server` is spawned.
 - [x] Default, skippable session labels with rename afterwards.
 - [x] Detect missing direct `codex`/`claude` executables at launch and show a guided message instead of a dead terminal.
-- Make the native terminal panel the default launch location while preserving editor-area terminals as an explicit preference, amending D2's recorded editor-column default.
-- Add a built-in, non-installing agent-profile catalog: detect supported local CLIs, explain their available Lookout integrations, and let users select a command/profile without hand-editing settings.
-- Make session templates the one-keystroke launch surface for the chosen profile, working-folder/worktree policy, task, browser URL, and preferred review resources.
+- [x] Make the native terminal panel the default launch location while
+  preserving editor-area terminals as an explicit preference, and amend D2.
+- [x] Add a built-in, non-installing agent-profile catalog: detect supported local CLIs, explain their available Lookout integrations, and let users select a command/profile without hand-editing settings.
+- [x] Make session templates the one-keystroke launch surface for the chosen profile, working-folder/worktree policy, task, browser URL, and preferred review resources. Template persistence is allow-listed and never stores launch commands or environment variables.
 
 ## Then: make parallel work legible and resumable
 
-- Add a persisted session inbox/timeline built only from explicit lifecycle, attention, review, and task events—never raw terminal output or prompts—with next/previous unread navigation.
-- Add per-session operational stats: elapsed time, attention events, delegated-agent count, worktree change count/diff stats, and known task/test/debug result.
-- Resume supported Codex/Claude sessions through provider-owned IDs; browse prior Lookout session metadata and clearly distinguish resumable, terminal-only, and unavailable records.
-- Offer a privacy-safe export of session metadata and event history, not a transcript.
-- Display session integration health in one place: lifecycle bridge state, hook-trust state, usage availability/staleness, and worktree baseline state.
+- [x] Add a persisted session inbox/timeline built only from explicit lifecycle and attention events—never raw terminal output or prompts—with next/previous unread navigation. Review/task event producers remain a later extension of the same fixed ledger.
+- [x] Add privacy-safe per-session operational stats for elapsed time,
+  attention/events, delegated-agent activity, provider-identity observations,
+  and known exit result. Worktree diff stats and native verification outcome
+  live in Review; arbitrary debug-result inference remains out of scope.
+- [x] Resume supported Codex/Claude sessions through provider-owned IDs; browse prior Lookout session metadata and clearly distinguish resumable, terminal-only, and unavailable records.
+- [x] Offer a privacy-safe support export of identifier-free health metadata, not a transcript or raw event stream.
+- [x] Display session integration health in Agent tooltips and a dedicated Doctor report: lifecycle bridge state, hook-trust state, usage availability/staleness, remote-host scope, dependencies, provider identity, and worktree baseline availability.
 
 ## Then: improve trustworthy change narratives
 
-- Add worktree diff summaries (`+added −removed`, file count) to review groups.
+- [x] Add worktree diff summaries (`+added −removed`, file count), commits,
+  local tracking-ref upstream state, conflicts, diagnostic deltas, and
+  freshness-aware verification readiness to Review.
 - For isolated worktrees only, capture bounded event-linked change checkpoints and let users open the associated native diff; never infer a per-agent edit history for a shared worktree.
 - Make the isolated-worktree recommendation contextual when users start multiple agents in the same repository, while preserving shared-worktree workflows as an explicit supported choice.
 
-## Next: opt-in Compound Engineering
+## Deferred: opt-in Compound Engineering
+
+Compound Engineering remains opt-in and is deferred until the universal
+profiles, continuity, inbox, and verification loop in the pre-release program
+is complete. None of the release phases may silently install or enable it.
 
 The decision-complete design is in [the opt-in Compound Engineering plan](plans/compound-engineering-opt-in.md). Compound Engineering is credited to [Kieran Klaassen and Every](https://every.to/guides/compound-engineering). Integration is Workshop-first because [The Workshop](https://github.com/adamhulme/the-workshop)'s manifest contract is captured and verified; [Every's official plugin](https://github.com/EveryInc/compound-engineering-plugin) is credited and guided, and gains its own catalog once its contract is captured the same way. Lookout never silently installs either.
 
@@ -92,7 +113,8 @@ The decision-complete design is in [the opt-in Compound Engineering plan](plans/
 - Add Enable/Disable commands plus a Configure quick pick covering the compatibility check, installation guidance, and the credited guide.
 - Detect bounded The Workshop manifests at user/project Claude and Codex targets without reading credentials or skill contents.
 - Guide provider-native Every/The Workshop installation without automatically executing installers or updates.
-- Record the opt-in module as D11 and amend D5's Plans & Docs behavior in the decision log.
+- Record the opt-in module in the next available decision entry and amend D5's
+  Plans & Docs behavior in the decision log.
 
 ### Workflow-aware artifacts
 
@@ -124,12 +146,20 @@ The decision-complete design is in [the opt-in Compound Engineering plan](plans/
 
 ## Then: scale and polish
 
-- Multi-root and Remote SSH/dev-container smoke matrix.
+- [ ] Multi-root and Remote SSH/dev-container smoke matrix. Doctor now reports a sanitized execution-host kind, but the installed-artifact matrix remains a release gate.
 - [x] Extension-host integration tests on minimum and current VS Code for the core launch, attention, split, review, and close loop.
-- Add Windows and macOS CI legs for the platform-specific quoting/path branches.
+- [x] Run lint, unit tests, packaging, and stable extension-host coverage on
+  Windows and macOS as well as Linux; keep the minimum VS Code extension-host
+  leg on Linux.
+- Prototype cross-workspace coordination behind an experimental setting. One
+  coordinator covers one VS Code profile on one execution host/remote
+  authority; do not claim transparent federation between local, WSL, SSH, and
+  container hosts.
 - [x] Accessible Activity Bar and 256×256 Marketplace icons, gallery banner,
   user-first README, privacy/support/security docs, and a release checklist.
 - Settings walkthrough, real Marketplace screenshots/GIF, and publishing automation.
+- [x] Passive Getting Started walkthrough for profiles, launch, Inbox, Review, and continuity.
+- [x] Advisory three-OS provider compatibility lab with deterministic fake CLIs and sanitized installed-CLI surface reports.
 
 ## Then: Marketplace release (0.1, preview)
 
@@ -139,7 +169,8 @@ Details in [the 2026-07-10 review](sessions/2026-07-10-review.md):
 - [x] Listing foundation: 256×256 PNG `icon`, gallery banner, user-first README,
   privacy/support links, `AI` category, and agent-name keywords.
 - Listing media: screenshots/GIF of the launch → attention → review loop.
-- Build: esbuild bundling; [x] `"preview": true`.
+- Build: [x] small dependency-free VSIX and `"preview": true`; bundling is not a
+  release blocker while it provides no material size or startup benefit.
 - Publish: tag-driven `vsce publish` and Open VSX (Cursor/VSCodium/Windsurf users).
 
 ## Release gates

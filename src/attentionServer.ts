@@ -145,10 +145,26 @@ function parseAgentEvent(value: unknown): AgentEvent {
   if (typeof value.sessionId !== 'string' || value.sessionId.length === 0) {
     throw new Error('Event requires a session ID');
   }
+  const provider = parseProviderMetadata(value);
+  if (value.kind === 'provider-session') {
+    if (!provider.provider || !provider.providerSessionId) {
+      throw new Error('Provider session event requires provider identity');
+    }
+    return {
+      kind: 'provider-session',
+      sessionId: value.sessionId,
+      provider: provider.provider,
+      providerSessionId: provider.providerSessionId,
+      ...(provider.providerSessionSource
+        ? { providerSessionSource: provider.providerSessionSource }
+        : {})
+    };
+  }
   if (value.kind === 'foreground-stop') {
     return {
       kind: 'foreground-stop',
       sessionId: value.sessionId,
+      ...provider,
       ...(value.reason === 'turn-end' ? { reason: 'turn-end' as const } : {}),
       ...(typeof value.message === 'string'
         ? { message: value.message.slice(0, 240) }
@@ -162,6 +178,7 @@ function parseAgentEvent(value: unknown): AgentEvent {
     return {
       kind: value.kind,
       sessionId: value.sessionId,
+      ...provider,
       agentId: value.agentId.slice(0, 200),
       agentLabel:
         typeof value.agentLabel === 'string' && value.agentLabel.length > 0
@@ -183,6 +200,7 @@ function parseAgentEvent(value: unknown): AgentEvent {
     return {
       kind: value.kind,
       sessionId: value.sessionId,
+      ...provider,
       commandId,
       command,
       ...(result ? { result } : {})
@@ -197,6 +215,7 @@ function parseAgentEvent(value: unknown): AgentEvent {
   return {
     kind: 'status',
     sessionId: value.sessionId,
+    ...provider,
     status: value.status as AgentReportedStatus,
     ...(typeof value.message === 'string' ? { message: value.message.slice(0, 240) } : {}),
     ...(typeof value.exitCode === 'number' ? { exitCode: value.exitCode } : {})
@@ -231,6 +250,37 @@ function parseCommandResult(value: unknown):
     ...(stderr ? { stderr } : {}),
     ...(error ? { error } : {}),
     ...(value.truncated === true ? { truncated: true } : {})
+  };
+}
+
+function parseProviderMetadata(
+  value: Record<string, unknown>
+): Pick<
+  AgentEvent,
+  'provider' | 'providerSessionId' | 'providerSessionSource'
+> {
+  const provider =
+    value.provider === 'codex' || value.provider === 'claude'
+      ? value.provider
+      : undefined;
+  const providerSessionId =
+    typeof value.providerSessionId === 'string' &&
+    value.providerSessionId.length > 0 &&
+    value.providerSessionId.length <= 200
+      ? value.providerSessionId
+      : undefined;
+  const source = value.providerSessionSource;
+  const providerSessionSource =
+    source === 'startup' ||
+    source === 'resume' ||
+    source === 'clear' ||
+    source === 'compact'
+      ? source
+      : undefined;
+  return {
+    ...(provider ? { provider } : {}),
+    ...(providerSessionId ? { providerSessionId } : {}),
+    ...(providerSessionSource ? { providerSessionSource } : {})
   };
 }
 

@@ -20,7 +20,11 @@ This is the durable decision log for Lookout. Decisions can change, but changes 
 
 **Decision:** do not reproduce cmux's Workspace → Pane → Surface hierarchy. A session owns friendly metadata and a native terminal; VS Code owns windows, editor groups, tabs, splits, remote workspaces, and layout persistence.
 
-New agent terminals default to editor column two. Review resources default to column one. A session can split a sibling terminal relative to itself.
+New agent terminals default to VS Code's native terminal panel, which keeps the
+editor area available for code and review on a stranger's first run. Users can
+select editor-area terminals with `lookout.terminals.location`; when they do,
+Lookout uses editor column two and leaves column one available for review. A
+session can split a sibling terminal relative to itself in either layout.
 
 ## D3 — Attention comes from explicit events
 
@@ -71,7 +75,7 @@ Custom session commands are deliberately omitted from persisted workspace state 
 
 ## D8 — Codex lifecycle integration is session-local and conservative
 
-**Decision:** for direct `codex` invocations, pass command-line-only `UserPromptSubmit`, `PermissionRequest`, `SubagentStart`, `SubagentStop`, `Stop`, and Bash-matched `PreToolUse`/`PostToolUse` hooks plus a `notify` turn-complete fallback. `PermissionRequest` is a neutral authorization-check signal because it precedes and cannot observe automatic approval. Do not modify user or project Codex files. Leave wrapper commands and shell expressions untouched; preserve explicit notifier or hook overrides. The integration can be disabled with `lookout.codex.lifecycleIntegration`.
+**Decision:** for direct `codex` invocations, pass command-line-only `SessionStart`, `UserPromptSubmit`, `PermissionRequest`, `SubagentStart`, `SubagentStop`, `Stop`, and Bash-matched `PreToolUse`/`PostToolUse` hooks plus a `notify` turn-complete fallback. `SessionStart` captures the documented provider session ID without reading its transcript path. `PermissionRequest` is a neutral authorization-check signal because it precedes and cannot observe automatic approval. Do not modify user or project Codex files. Leave wrapper commands and shell expressions untouched; preserve explicit notifier or hook overrides. The integration can be disabled with `lookout.codex.lifecycleIntegration`.
 
 Non-managed Codex hooks require review and trust. Lookout tells the user to run `/hooks` once; it never passes `--dangerously-bypass-hook-trust`. Until hooks are trusted, the external notifier still supplies conservative turn-complete attention. Composing a user's global Codex notifier with Lookout remains an open design task.
 
@@ -91,11 +95,42 @@ Before the first public extension release, use `lookout` consistently for the ex
 
 **Decision:** the Review view's **Running** group lists the shell commands agents are executing right now (builds, tests, dev servers), above any native VS Code Tasks and the active debug session. Command lifecycle comes only from explicit provider tool-use hooks — both Claude and Codex `PreToolUse`/`PostToolUse` matched to the `Bash` tool (the canonical shell-tool name for both providers) report `command-start`/`command-stop` through the same `notify.ts` bridge as delegated-agent events — never from terminal-output scraping (upholds [D3](#d3--attention-comes-from-explicit-events)). Only in-flight commands are shown: fast commands finish before their start is observed, so the list self-filters to genuinely long-running work without any command-name heuristic. A fresh prompt, a turn end, or a session reset clears the list so a missing stop hook cannot leak a stale entry. If a user globally opts in to `lookout.review.captureCommandOutput`, a separate **Recent Command Results** group keeps a trailing 8 KiB provider result in memory only; it is not terminal scraping or persisted session data. The Codex hook set was verified against the installed CLI (`codex-cli 0.144.1`) and the [official hooks reference](https://developers.openai.com/codex/hooks): both providers share the Claude-compatible `tool_name`/`tool_input.command`/`tool_use_id` payload, so a single extraction path serves both. Non-shell tool calls (`apply_patch`, `Edit`, MCP) carry no command; the matcher limits firing, and `notify.ts` no-ops on any command event without a command as a defensive backstop. Codex's experimental code-mode host routes shell calls through an `exec` JavaScript tool rather than `Bash`, so those are not surfaced — a known, acceptable gap. This resolves former open decision 3 in favor of surfacing running commands directly rather than only opening the Test Explorer.
 
+## D12 — Cross-workspace coordination is experimental and host-scoped
+
+**Decision:** any cross-workspace coordinator remains behind an experimental
+setting until its authentication, crash recovery, upgrade, and multi-process
+behavior pass the pre-release program.
+
+One coordinator serves one VS Code profile on one execution host or remote
+authority. It may coordinate local windows on the same machine, or multiple
+windows attached to the same WSL, SSH, or dev-container host. It does not imply
+transparent federation between those hosts. The coordinator carries bounded
+session metadata and commands only; it stores no transcript, provider
+credential, prompt, reasoning, or terminal output. This scope is defined in the
+[pre-release product program](plans/pre-release-program.md).
+
+## D13 — Provider identity and Lookout history are metadata-only
+
+**Decision:** keep Lookout session IDs separate from provider-owned session
+IDs. Capture Codex and Claude IDs only from authenticated documented hook
+fields, retain bounded identity lineage for legitimate rotations such as
+`/clear`, and visibly degrade on unexplained changes or duplicate live
+bindings. Never read the provider `transcript_path` supplied alongside that
+identity.
+
+Lookout persists a versioned, bounded ledger of allow-listed operational event
+kinds and fixed summaries. It does not persist prompt text, reasoning,
+transcripts, terminal scrollback, command output, or live command text. Resume
+and fork are explicit actions built through provider adapters; custom and
+adopted terminals remain honestly terminal-only. This resolves former open
+decisions 2 and 5 in favor of provider-native continuity plus a metadata-only
+Lookout inbox.
+
 ## Open decisions
 
 1. Should “new agent” optionally create a Git worktree by default, or remain a separate advanced command?
-2. Should session resume IDs be captured for `codex resume` and `claude --resume`, and what stable source should provide them?
+2. ~~Should session resume IDs be captured for `codex resume` and `claude --resume`, and what stable source should provide them?~~ Resolved by [D13](#d13--provider-identity-and-lookout-history-are-metadata-only): authenticated documented hook fields provide the identity; transcripts are never read.
 3. ~~Should the Review view expose discovered tests directly, or only open the native Test Explorer/run tasks?~~ Resolved by [D11](#d11--the-review-running-group-surfaces-agent-commands-authoritatively): running agent commands (including test runs) are surfaced directly in the Running group.
 4. How should existing Claude status-line commands be composed without executing arbitrary global configuration implicitly?
-5. Should Lookout expose a notification feed view, or keep unread/latest-event state only in agent rows?
+5. ~~Should Lookout expose a notification feed view, or keep unread/latest-event state only in agent rows?~~ Resolved by [D13](#d13--provider-identity-and-lookout-history-are-metadata-only): persist a bounded operational event ledger and add its inbox UI in Phase 2.
 6. How should a user's global Codex `notify` command be composed with Lookout's session-only notifier?

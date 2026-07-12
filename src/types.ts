@@ -1,5 +1,37 @@
 export type AgentKind = 'codex' | 'claude' | 'custom';
 
+export type ManagedAgentKind = Extract<AgentKind, 'codex' | 'claude'>;
+
+export type ProviderSessionSource = 'startup' | 'resume' | 'clear' | 'compact';
+
+export interface ProviderSessionReference {
+  readonly provider: ManagedAgentKind;
+  readonly id: string;
+  readonly firstSeenAt: number;
+  lastSeenAt: number;
+  state: 'available' | 'provider-archived' | 'unavailable' | 'unknown';
+}
+
+export interface SessionLineage {
+  readonly operation: 'new' | 'resume' | 'fork' | 'reopen';
+  readonly sourceLookoutSessionId?: string;
+  readonly sourceProviderSessionId?: string;
+}
+
+export interface SessionIntegration {
+  lifecycle:
+    | 'disabled'
+    | 'bridge-unavailable'
+    | 'injection-skipped'
+    | 'awaiting-first-hook'
+    | 'healthy'
+    | 'stale';
+  hookTrust: 'not-applicable' | 'unknown' | 'observed';
+  lastHookAt?: number;
+  expectedProviderSessionId?: string;
+  conflict?: string;
+}
+
 export type SessionStatus =
   | 'starting'
   | 'active'
@@ -17,6 +49,7 @@ export interface AgentSession {
   readonly kind: AgentKind;
   label: string;
   readonly command: string;
+  readonly providerCommand?: string;
   readonly cwd: string;
   status: SessionStatus;
   readonly createdAt: number;
@@ -27,6 +60,10 @@ export interface AgentSession {
   backgroundAgents: BackgroundAgent[];
   runningCommands: RunningCommand[];
   foregroundState: ForegroundState;
+  providerSessions: ProviderSessionReference[];
+  lineage: SessionLineage;
+  integration: SessionIntegration;
+  archivedAt?: number;
   latestEvent?: string;
   exitCode?: number;
   readonly baseline?: GitBaseline;
@@ -78,7 +115,20 @@ export type AgentReportedStatus = Extract<
   'running' | 'attention' | 'completed' | 'failed'
 >;
 
-export interface AgentStatusEvent {
+export interface ProviderEventMetadata {
+  readonly provider?: ManagedAgentKind;
+  readonly providerSessionId?: string;
+  readonly providerSessionSource?: ProviderSessionSource;
+}
+
+export interface ProviderSessionEvent extends ProviderEventMetadata {
+  readonly kind: 'provider-session';
+  readonly sessionId: string;
+  readonly provider: ManagedAgentKind;
+  readonly providerSessionId: string;
+}
+
+export interface AgentStatusEvent extends ProviderEventMetadata {
   readonly kind: 'status';
   readonly sessionId: string;
   readonly status: AgentReportedStatus;
@@ -86,7 +136,7 @@ export interface AgentStatusEvent {
   readonly exitCode?: number;
 }
 
-export interface AgentForegroundStopEvent {
+export interface AgentForegroundStopEvent extends ProviderEventMetadata {
   readonly kind: 'foreground-stop';
   readonly sessionId: string;
   readonly message?: string;
@@ -95,14 +145,14 @@ export interface AgentForegroundStopEvent {
   readonly reason?: 'turn-end';
 }
 
-export interface AgentBackgroundEvent {
+export interface AgentBackgroundEvent extends ProviderEventMetadata {
   readonly kind: 'background-start' | 'background-stop';
   readonly sessionId: string;
   readonly agentId: string;
   readonly agentLabel: string;
 }
 
-export interface AgentCommandEvent {
+export interface AgentCommandEvent extends ProviderEventMetadata {
   readonly kind: 'command-start' | 'command-stop';
   readonly sessionId: string;
   readonly commandId: string;
@@ -111,6 +161,7 @@ export interface AgentCommandEvent {
 }
 
 export type AgentEvent =
+  | ProviderSessionEvent
   | AgentStatusEvent
   | AgentForegroundStopEvent
   | AgentBackgroundEvent
@@ -122,4 +173,7 @@ export interface LaunchRequest {
   readonly command: string;
   readonly cwd: string;
   readonly parentSessionId?: string;
+  readonly lineage?: SessionLineage;
+  readonly expectedProviderSessionId?: string;
+  readonly providerCommand?: string;
 }

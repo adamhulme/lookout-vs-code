@@ -1,7 +1,13 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { AgentEvent, AgentReportedStatus, CommandResult } from './types';
+import type {
+  AgentEvent,
+  AgentReportedStatus,
+  CommandResult,
+  DelegatedAgentTokenUsage,
+  SessionTokenUsage
+} from './types';
 import type { UsageBridgeEvent, UsageWindow } from './usageTypes';
 
 const EVENT_STATUSES = new Set<AgentReportedStatus>([
@@ -302,11 +308,79 @@ function parseUsageEvent(value: unknown): UsageBridgeEvent {
     throw new Error('Too many usage windows');
   }
   const windows = value.windows.map(parseUsageWindow);
+  const tokenUsage = parseSessionTokenUsage(value.tokenUsage);
   return {
     provider: 'claude',
     observedAt: typeof value.observedAt === 'number' ? value.observedAt : Date.now(),
-    windows
+    windows,
+    ...(typeof value.sessionId === 'string' && value.sessionId.length > 0
+      ? { sessionId: value.sessionId.slice(0, 200) }
+      : {}),
+    ...(tokenUsage ? { tokenUsage } : {})
   };
+}
+
+function parseSessionTokenUsage(value: unknown): SessionTokenUsage | undefined {
+  if (
+    !isRecord(value) ||
+    value.source !== 'claude-statusline' ||
+    typeof value.contextTokens !== 'number' ||
+    typeof value.inputTokens !== 'number' ||
+    typeof value.outputTokens !== 'number'
+  ) {
+    return undefined;
+  }
+  const delegatedAgents = Array.isArray(value.delegatedAgents)
+    ? value.delegatedAgents.slice(0, 64).flatMap(parseDelegatedTokenUsage)
+    : [];
+  return {
+    source: 'claude-statusline',
+    observedAt:
+      typeof value.observedAt === 'number' ? value.observedAt : Date.now(),
+    contextTokens: boundedCount(value.contextTokens),
+    inputTokens: boundedCount(value.inputTokens),
+    outputTokens: boundedCount(value.outputTokens),
+    ...(typeof value.contextWindowTokens === 'number'
+      ? { contextWindowTokens: boundedCount(value.contextWindowTokens) }
+      : {}),
+    ...(typeof value.contextUsedPercent === 'number'
+      ? {
+          contextUsedPercent: Math.max(
+            0,
+            Math.min(100, value.contextUsedPercent)
+          )
+        }
+      : {}),
+    ...(typeof value.totalCostUsd === 'number' && Number.isFinite(value.totalCostUsd)
+      ? { totalCostUsd: Math.max(0, value.totalCostUsd) }
+      : {}),
+    delegatedAgents
+  };
+}
+
+function parseDelegatedTokenUsage(value: unknown): DelegatedAgentTokenUsage[] {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== 'string' ||
+    typeof value.label !== 'string' ||
+    typeof value.tokenCount !== 'number'
+  ) {
+    return [];
+  }
+  return [{
+    id: value.id.slice(0, 200),
+    label: value.label.slice(0, 120),
+    tokenCount: boundedCount(value.tokenCount),
+    ...(typeof value.status === 'string'
+      ? { status: value.status.slice(0, 40) }
+      : {})
+  }];
+}
+
+function boundedCount(value: number): number {
+  return Number.isFinite(value)
+    ? Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(value)))
+    : 0;
 }
 
 function parseUsageWindow(value: unknown): UsageWindow {

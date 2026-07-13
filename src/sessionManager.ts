@@ -11,6 +11,7 @@ import {
   isDirectAgentCommand,
   shellQuote,
   withCodexLifecycleIntegration,
+  withCodexTokenBudget,
   type LaunchShell
 } from './agentCommand';
 import { captureGitBaseline, listUncommittedChanges } from './gitReview';
@@ -81,7 +82,10 @@ export class SessionManager implements vscode.Disposable {
   private readonly usageEmitter = new vscode.EventEmitter<UsageBridgeEvent>();
   private readonly attentionServer = new AttentionServer((event) => {
     void this.handleAgentEvent(event);
-  }, (event) => this.usageEmitter.fire(event));
+  }, (event) => {
+    this.handleUsageEvent(event);
+    this.usageEmitter.fire(event);
+  });
   private readonly disposables: vscode.Disposable[] = [];
   private selectedSessionId: string | undefined;
   private persistChain: Promise<void> = Promise.resolve();
@@ -362,6 +366,7 @@ export class SessionManager implements vscode.Disposable {
       request.command,
       request.cwd
     );
+    const tokenBudget = configuredTokenBudget(request.kind, request.command);
     const session: AgentSession = {
       ...created,
       bridgeAvailable: this.attentionEndpoint !== undefined,
@@ -377,6 +382,7 @@ export class SessionManager implements vscode.Disposable {
             }
           }
         : {}),
+      ...(tokenBudget ? { tokenBudget } : {}),
       ...(baseline ? { baseline } : {})
     };
     const parentTerminal = request.parentSessionId
@@ -398,7 +404,8 @@ export class SessionManager implements vscode.Disposable {
 
     const launched = await this.prepareLaunchCommand(
       request,
-      classifyShell(vscode.env.shell)
+      classifyShell(vscode.env.shell),
+      session.tokenBudget
     );
     const lifecycleEnabled =
       request.kind === 'codex' || request.kind === 'claude'
@@ -854,7 +861,8 @@ export class SessionManager implements vscode.Disposable {
         command: session.command,
         cwd: session.cwd
       },
-      classifyShell(vscode.env.shell)
+      classifyShell(vscode.env.shell),
+      session.tokenBudget
     );
     await this.executeAgentCommand(
       id,
@@ -1177,12 +1185,44 @@ export class SessionManager implements vscode.Disposable {
       .get('captureCommandOutput', false);
   }
 
+  private handleUsageEvent(event: UsageBridgeEvent): void {
+    if (!event.sessionId || !event.tokenUsage) {
+      return;
+    }
+    const session = this.sessions.get(event.sessionId);
+    if (!session || session.kind !== 'claude') {
+      return;
+    }
+    const activeDelegatedIds = new Set(
+      session.backgroundAgents.map((agent) => agent.id)
+    );
+    const delegatedAgents =
+      event.tokenUsage.delegatedAgents.length > 0
+        ? event.tokenUsage.delegatedAgents
+        : (session.tokenUsage?.delegatedAgents ?? []).filter((agent) =>
+            activeDelegatedIds.has(agent.id)
+          );
+    session.tokenUsage = {
+      ...event.tokenUsage,
+      observedAt: event.observedAt,
+      delegatedAgents
+    };
+    session.updatedAt = Math.max(session.updatedAt, event.observedAt);
+    void this.persistAndNotify();
+  }
+
   private async prepareLaunchCommand(
     request: LaunchRequest,
-    launchShell: LaunchShell
+    launchShell: LaunchShell,
+    tokenBudget?: AgentSession['tokenBudget']
   ): Promise<{ command: string; integrationsSkipped: boolean }> {
-    if (!this.attentionEndpoint) {
-      return { command: request.command, integrationsSkipped: false };
+    let command = request.command;
+    if (request.kind === 'codex' && tokenBudget?.kind === 'codex-rollout') {
+      command = withCodexTokenBudget(
+        command,
+        tokenBudget.limitTokens,
+        launchShell
+      );
     }
     const notifyHelperPath = path.join(
       this.context.extensionPath,
@@ -1192,21 +1232,25 @@ export class SessionManager implements vscode.Disposable {
     );
     if (
       request.kind === 'codex' &&
+      this.attentionEndpoint &&
       vscode.workspace
         .getConfiguration('lookout.codex')
         .get('lifecycleIntegration', true)
     ) {
-      const command = withCodexLifecycleIntegration(
-        request.command,
+      const lifecycleCommand = withCodexLifecycleIntegration(
+        command,
         notifyHelperPath,
         launchShell
       );
       return {
-        command,
+        command: lifecycleCommand,
         integrationsSkipped:
           !isDirectAgentCommand(request.command, 'codex') ||
           launchShell === 'unknown'
       };
+    }
+    if (request.kind === 'codex' || !this.attentionEndpoint) {
+      return { command, integrationsSkipped: false };
     }
     if (
       request.kind !== 'claude' ||
@@ -1214,7 +1258,7 @@ export class SessionManager implements vscode.Disposable {
       !isDirectClaudeCommand(request.command)
     ) {
       return {
-        command: request.command,
+        command,
         integrationsSkipped:
           request.kind === 'claude' &&
           vscode.workspace
@@ -1297,6 +1341,13 @@ export class SessionManager implements vscode.Disposable {
             statusLine: {
               type: 'command',
               command: `node ${shellQuote(helperPath, hookRunnerShell())}`
+            },
+            subagentStatusLine: {
+              type: 'command',
+              command: `node ${shellQuote(
+                helperPath,
+                hookRunnerShell()
+              )} --subagents`
             }
           }
         : {}),
@@ -1332,6 +1383,46 @@ export class SessionManager implements vscode.Disposable {
       await this.focus(id);
     }
   }
+}
+
+function configuredTokenBudget(
+  kind: AgentSession['kind'],
+  command: string
+): AgentSession['tokenBudget'] | undefined {
+  if (
+    kind === 'codex' &&
+    isDirectAgentCommand(command, 'codex') &&
+    !/(?:^|\s)(?:-c|--config)(?:\s+|=)\s*['"]?features\.rollout_budget\./.test(
+      command
+    )
+  ) {
+    const limitTokens = Math.floor(
+      vscode.workspace
+        .getConfiguration('lookout.usage.codex')
+        .get('tokenBudget', 0)
+    );
+    return limitTokens > 0
+      ? { kind: 'codex-rollout', limitTokens }
+      : undefined;
+  }
+  if (
+    kind === 'claude' &&
+    isDirectClaudeCommand(command) &&
+    !/(^|\s)--settings(?:\s|=)/.test(command) &&
+    vscode.workspace
+      .getConfiguration('lookout.usage.claude')
+      .get('statusLineIntegration', true)
+  ) {
+    const limitTokens = Math.floor(
+      vscode.workspace
+        .getConfiguration('lookout.usage.claude')
+        .get('contextWarningTokens', 0)
+    );
+    return limitTokens > 0
+      ? { kind: 'claude-context-warning', limitTokens }
+      : undefined;
+  }
+  return undefined;
 }
 
 function joinRisks(risks: readonly string[]): string {

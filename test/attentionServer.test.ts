@@ -171,13 +171,31 @@ test('accepts authenticated agent and usage events on loopback', async (context)
       {
         provider: 'claude',
         observedAt: 42,
+        sessionId: 'session-1',
         windows: [
           { id: 'five_hour', label: '5 hour', usedPercent: 150 }
-        ]
+        ],
+        tokenUsage: {
+          source: 'claude-statusline',
+          observedAt: 42,
+          contextTokens: 12_000,
+          inputTokens: 11_000,
+          outputTokens: 1_000,
+          contextUsedPercent: 6,
+          delegatedAgents: [
+            { id: 'child-1', label: 'Review', tokenCount: 4_000 }
+          ]
+        }
       }
     );
     assert.equal(usageResponse.status, 204);
     assert.equal(usageEvents[0]?.windows[0]?.usedPercent, 100);
+    assert.equal(usageEvents[0]?.sessionId, 'session-1');
+    assert.equal(usageEvents[0]?.tokenUsage?.contextTokens, 12_000);
+    assert.equal(
+      usageEvents[0]?.tokenUsage?.delegatedAgents[0]?.tokenCount,
+      4_000
+    );
 
     const unauthorized = await post(endpoint.url, 'wrong-token', {
       sessionId: 'session-1',

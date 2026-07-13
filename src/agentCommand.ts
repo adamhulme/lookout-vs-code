@@ -143,6 +143,32 @@ export function withCodexLifecycleIntegration(
   );
 }
 
+export function withCodexTokenBudget(
+  command: string,
+  limitTokens: number,
+  launchShell: LaunchShell
+): string {
+  const limit = Math.floor(limitTokens);
+  if (
+    limit <= 0 ||
+    !isDirectAgentCommand(command, 'codex') ||
+    hasCodexRolloutBudgetOverride(command)
+  ) {
+    return command;
+  }
+  const overrides = [
+    'features.rollout_budget.enabled=true',
+    `features.rollout_budget.limit_tokens=${limit}`
+  ];
+  return overrides.reduce(
+    (result, override) =>
+      `${result} -c ${
+        launchShell === 'unknown' ? override : shellQuote(override, launchShell)
+      }`,
+    command
+  );
+}
+
 export function isDirectAgentCommand(
   command: string,
   executableName: 'claude' | 'codex'
@@ -226,6 +252,12 @@ function hasCodexNotifyOverride(command: string): boolean {
 
 function hasCodexHookOverride(command: string): boolean {
   return /(?:^|\s)(?:-c|--config)(?:\s+|=)\s*['"]?(?:features\.hooks|hooks\.)/.test(
+    command
+  );
+}
+
+function hasCodexRolloutBudgetOverride(command: string): boolean {
+  return /(?:^|\s)(?:-c|--config)(?:\s+|=)\s*['"]?features\.rollout_budget\./.test(
     command
   );
 }

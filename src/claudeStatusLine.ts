@@ -1,19 +1,31 @@
 import { request } from 'node:http';
-import { formatClaudeUsage, normalizeClaudeUsage } from './claudeUsage';
+import {
+  formatClaudeUsage,
+  normalizeClaudeSessionTokenUsage,
+  normalizeClaudeUsage
+} from './claudeUsage';
 
 async function main(): Promise<void> {
   const input = await readStdin();
   const parsed: unknown = JSON.parse(input);
   const windows = normalizeClaudeUsage(parsed);
+  const observedAt = Date.now();
+  const tokenUsage = normalizeClaudeSessionTokenUsage(parsed, observedAt);
 
-  if (windows.length > 0) {
+  if (windows.length > 0 || tokenUsage) {
     await postUsage({
       provider: 'claude',
-      observedAt: Date.now(),
-      windows
+      observedAt,
+      windows,
+      ...(process.env.LOOKOUT_SESSION_ID
+        ? { sessionId: process.env.LOOKOUT_SESSION_ID }
+        : {}),
+      ...(tokenUsage ? { tokenUsage } : {})
     });
   }
-  process.stdout.write(formatClaudeUsage(windows));
+  if (!process.argv.includes('--subagents')) {
+    process.stdout.write(formatClaudeUsage(windows));
+  }
 }
 
 async function postUsage(body: object): Promise<void> {

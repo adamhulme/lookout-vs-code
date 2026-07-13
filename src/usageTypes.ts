@@ -1,3 +1,5 @@
+import type { SessionTokenUsage } from './types';
+
 export type UsageProviderId = 'codex' | 'claude';
 
 export type UsageStatus =
@@ -35,4 +37,6 @@ export interface UsageBridgeEvent {
   readonly provider: 'claude';
   readonly observedAt: number;
   readonly windows: readonly UsageWindow[];
+  readonly sessionId?: string;
+  readonly tokenUsage?: SessionTokenUsage;
 }

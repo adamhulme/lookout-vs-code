@@ -189,13 +189,33 @@ test('accepts authenticated agent and usage events on loopback', async (context)
       }
     );
     assert.equal(usageResponse.status, 204);
-    assert.equal(usageEvents[0]?.windows[0]?.usedPercent, 100);
-    assert.equal(usageEvents[0]?.sessionId, 'session-1');
-    assert.equal(usageEvents[0]?.tokenUsage?.contextTokens, 12_000);
+    const usage = usageEvents[0];
+    assert.ok(usage && usage.kind !== 'delegated-agents');
+    assert.equal(usage.windows[0]?.usedPercent, 100);
+    assert.equal(usage.sessionId, 'session-1');
+    assert.equal(usage.tokenUsage?.contextTokens, 12_000);
     assert.equal(
-      usageEvents[0]?.tokenUsage?.delegatedAgents[0]?.tokenCount,
+      usage.tokenUsage?.delegatedAgents[0]?.tokenCount,
       4_000
     );
+
+    const delegatedResponse = await post(
+      endpoint.url.replace(/\/events$/, '/usage'),
+      endpoint.token,
+      {
+        kind: 'delegated-agents',
+        provider: 'claude',
+        observedAt: 43,
+        sessionId: 'session-1',
+        delegatedAgents: [
+          { id: 'child-1', label: 'Review', tokenCount: 4_500 }
+        ]
+      }
+    );
+    assert.equal(delegatedResponse.status, 204);
+    const delegated = usageEvents[1];
+    assert.ok(delegated && delegated.kind === 'delegated-agents');
+    assert.equal(delegated.delegatedAgents[0]?.tokenCount, 4_500);
 
     const unauthorized = await post(endpoint.url, 'wrong-token', {
       sessionId: 'session-1',

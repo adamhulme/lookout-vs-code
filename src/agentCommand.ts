@@ -158,7 +158,11 @@ export function withCodexTokenBudget(
   }
   const overrides = [
     'features.rollout_budget.enabled=true',
-    `features.rollout_budget.limit_tokens=${limit}`
+    `features.rollout_budget.limit_tokens=${limit}`,
+    // Current Codex builds require this field whenever rollout_budget is
+    // enabled. An empty list keeps Lookout from inventing reminder thresholds
+    // while retaining Codex's initial budget notice and hard limit.
+    'features.rollout_budget.reminder_at_remaining_tokens=[]'
   ];
   return overrides.reduce(
     (result, override) =>

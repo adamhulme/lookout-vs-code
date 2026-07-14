@@ -56,7 +56,7 @@ export function normalizeClaudeSessionTokenUsage(
   const outputTokens =
     finiteNumber(context?.total_output_tokens) ??
     finiteNumber(current?.output_tokens);
-  const delegatedAgents = normalizeDelegatedAgents(value.tasks);
+  const delegatedAgents = normalizeClaudeDelegatedAgentTokenUsage(value);
   const cost = isRecord(value.cost) ? value.cost : undefined;
   const totalCostUsd = finiteNumber(cost?.total_cost_usd);
   const contextWindowTokens = finiteNumber(context?.context_window_size);
@@ -132,11 +132,17 @@ function nonNegativeInteger(value: number): number {
   return Math.max(0, Math.floor(value));
 }
 
-function normalizeDelegatedAgents(value: unknown): DelegatedAgentTokenUsage[] {
-  if (!Array.isArray(value)) {
+export function normalizeClaudeDelegatedAgentTokenUsage(
+  value: unknown
+): DelegatedAgentTokenUsage[] {
+  if (!isRecord(value)) {
     return [];
   }
-  return value
+  const tasks = value.tasks;
+  if (!Array.isArray(tasks)) {
+    return [];
+  }
+  return tasks
     .slice(0, 64)
     .flatMap((candidate): DelegatedAgentTokenUsage[] => {
       if (!isRecord(candidate)) {

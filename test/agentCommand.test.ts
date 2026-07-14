@@ -47,6 +47,10 @@ test('adds a native Codex rollout token budget without replacing user overrides'
   const command = withCodexTokenBudget('codex --no-alt-screen', 50_000, 'posix');
   assert.match(command, /features\.rollout_budget\.enabled=true/);
   assert.match(command, /features\.rollout_budget\.limit_tokens=50000/);
+  assert.match(
+    command,
+    /features\.rollout_budget\.reminder_at_remaining_tokens=\[\]/
+  );
 
   const explicit =
     "codex -c 'features.rollout_budget.limit_tokens=1234'";

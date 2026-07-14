@@ -47,6 +47,7 @@ import type {
   AgentReportedStatus,
   AgentSession,
   CommandResult,
+  DelegatedAgentTokenUsage,
   LaunchRequest,
   ManagedAgentKind
 } from './types';
@@ -68,6 +69,14 @@ export interface ProviderContinuationSource {
 export class SessionManager implements vscode.Disposable {
   private readonly sessions = new Map<string, AgentSession>();
   private readonly commandResults = new Map<string, CommandResult[]>();
+  private readonly pendingDelegatedUsage = new Map<
+    string,
+    {
+      readonly observedAt: number;
+      readonly delegatedAgents: readonly DelegatedAgentTokenUsage[];
+    }
+  >();
+  private readonly delegatedUsageObservedAt = new Map<string, number>();
   private commandResultSequence = 0;
   private eventLedger: EventLedger = { nextSequence: 1, events: [] };
   private readonly terminals = new Map<string, vscode.Terminal>();
@@ -271,6 +280,8 @@ export class SessionManager implements vscode.Disposable {
         this.terminals.delete(id);
         this.agentExecutions.delete(id);
         this.commandResults.delete(id);
+        this.pendingDelegatedUsage.delete(id);
+        this.delegatedUsageObservedAt.delete(id);
         this.sessionIdsByTerminal.delete(terminal);
         this.topologyEmitter.fire();
         this.recordEvent(
@@ -812,6 +823,8 @@ export class SessionManager implements vscode.Disposable {
       terminal.dispose();
     }
     this.commandResults.delete(id);
+    this.pendingDelegatedUsage.delete(id);
+    this.delegatedUsageObservedAt.delete(id);
     this.eventLedger = removeSessionEvents(this.eventLedger, id);
     if (!this.sessions.delete(id)) {
       return;
@@ -848,7 +861,10 @@ export class SessionManager implements vscode.Disposable {
     session.unread = false;
     session.backgroundAgents = [];
     session.runningCommands = [];
+    session.tokenUsage = undefined;
     this.commandResults.delete(id);
+    this.pendingDelegatedUsage.delete(id);
+    this.delegatedUsageObservedAt.delete(id);
     session.foregroundState = 'unknown';
     session.latestEvent = 'Restarting agent command';
     session.updatedAt = Date.now();
@@ -1186,22 +1202,61 @@ export class SessionManager implements vscode.Disposable {
   }
 
   private handleUsageEvent(event: UsageBridgeEvent): void {
-    if (!event.sessionId || !event.tokenUsage) {
+    if (!event.sessionId) {
       return;
     }
     const session = this.sessions.get(event.sessionId);
     if (!session || session.kind !== 'claude') {
       return;
     }
-    const activeDelegatedIds = new Set(
-      session.backgroundAgents.map((agent) => agent.id)
-    );
+    if (event.kind === 'delegated-agents') {
+      const previousObservedAt =
+        this.delegatedUsageObservedAt.get(event.sessionId) ?? -1;
+      if (event.observedAt < previousObservedAt) {
+        return;
+      }
+      this.delegatedUsageObservedAt.set(event.sessionId, event.observedAt);
+      if (!session.tokenUsage) {
+        this.pendingDelegatedUsage.set(event.sessionId, {
+          observedAt: event.observedAt,
+          delegatedAgents: event.delegatedAgents
+        });
+        return;
+      }
+      session.tokenUsage = {
+        ...session.tokenUsage,
+        delegatedAgents: event.delegatedAgents
+      };
+      session.updatedAt = Math.max(session.updatedAt, event.observedAt);
+      void this.persistAndNotify();
+      return;
+    }
+    if (!event.tokenUsage) {
+      return;
+    }
+    if (
+      session.tokenUsage &&
+      event.observedAt < session.tokenUsage.observedAt
+    ) {
+      return;
+    }
+    const pendingDelegated = this.pendingDelegatedUsage.get(event.sessionId);
+    this.pendingDelegatedUsage.delete(event.sessionId);
     const delegatedAgents =
-      event.tokenUsage.delegatedAgents.length > 0
+      pendingDelegated && pendingDelegated.observedAt > event.observedAt
+        ? pendingDelegated.delegatedAgents
+        : event.tokenUsage.delegatedAgents.length > 0
         ? event.tokenUsage.delegatedAgents
-        : (session.tokenUsage?.delegatedAgents ?? []).filter((agent) =>
-            activeDelegatedIds.has(agent.id)
-          );
+        : pendingDelegated?.delegatedAgents ??
+          session.tokenUsage?.delegatedAgents ??
+          [];
+    if (
+      event.tokenUsage.delegatedAgents.length > 0 &&
+      event.observedAt >=
+        (this.delegatedUsageObservedAt.get(event.sessionId) ?? -1)
+    ) {
+      this.delegatedUsageObservedAt.set(event.sessionId, event.observedAt);
+    }
     session.tokenUsage = {
       ...event.tokenUsage,
       observedAt: event.observedAt,

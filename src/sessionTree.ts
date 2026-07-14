@@ -21,6 +21,11 @@ const STATUS_ICONS: Record<SessionStatus, vscode.ThemeIcon> = {
   closed: new vscode.ThemeIcon('circle-slash')
 };
 
+const READ_WAITING_ICONS: Partial<Record<SessionStatus, vscode.ThemeIcon>> = {
+  attention: new vscode.ThemeIcon('question'),
+  idle: new vscode.ThemeIcon('debug-pause')
+};
+
 export class SessionTreeItem extends vscode.TreeItem {
   public constructor(
     public readonly session: AgentSession,
@@ -54,7 +59,9 @@ export class SessionTreeItem extends vscode.TreeItem {
         : []),
       ...operationalStatsTooltipLines(stats)
     ].join('\n');
-    this.iconPath = STATUS_ICONS[session.status];
+    this.iconPath = session.unread
+      ? STATUS_ICONS[session.status]
+      : (READ_WAITING_ICONS[session.status] ?? STATUS_ICONS[session.status]);
     this.command = {
       command: 'lookout.focusSession',
       title: 'Focus Agent',
@@ -141,7 +148,7 @@ export class SessionStatusBar implements vscode.Disposable {
     const sessions = this.manager.list();
     const unread = sessions.filter((session) => session.unread).length;
     const attention = sessions.filter(
-      (session) => session.status === 'attention'
+      (session) => session.status === 'attention' && session.unread
     ).length;
     if (attention > 0) {
       this.item.text = `$(bell-dot) ${attention} agent${attention === 1 ? '' : 's'}`;

@@ -164,6 +164,14 @@ suite('Lookout extension-host integration', () => {
       'Attention navigation did not focus the agent terminal'
     );
     assert.equal(api.sessions.get(session.id)?.unread, false);
+    const focusedRow = api.sessionTree
+      .getChildren()
+      .find((item) => item.session.id === session.id);
+    assert.equal(
+      (focusedRow?.iconPath as vscode.ThemeIcon | undefined)?.id,
+      'question',
+      'Reading an attention notification should clear its bell icon'
+    );
     observer.dispose();
   });
 

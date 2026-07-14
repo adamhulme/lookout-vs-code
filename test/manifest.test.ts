@@ -18,6 +18,11 @@ interface Manifest {
   readonly icon?: string;
   readonly categories?: string[];
   readonly files?: string[];
+  readonly capabilities?: {
+    readonly untrustedWorkspaces?: {
+      readonly restrictedConfigurations?: string[];
+    };
+  };
   readonly contributes?: {
     readonly commands?: ManifestCommand[];
     readonly viewsWelcome?: Array<{ readonly when?: string }>;
@@ -126,6 +131,19 @@ test('launches agents in the native terminal panel by default', () => {
     'lookout.terminals.location'
   ];
   assert.equal(setting?.default, 'panel');
+});
+
+test('restricts workspace-controlled review scans outside trusted workspaces', () => {
+  const restricted = new Set(
+    manifest.capabilities?.untrustedWorkspaces?.restrictedConfigurations ?? []
+  );
+  for (const setting of [
+    'lookout.review.showRecentImages',
+    'lookout.review.imageGlob',
+    'lookout.review.artifactGlobs'
+  ]) {
+    assert.ok(restricted.has(setting), `${setting} must be restricted`);
+  }
 });
 
 test('keeps per-agent token budgets opt-in', () => {

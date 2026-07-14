@@ -194,7 +194,9 @@ are disabled until the workspace is trusted.
 Lookout persists opaque provider session IDs only when documented lifecycle
 hooks report them. Its bounded event ledger stores fixed operational event kinds
 and read state, never hook messages, prompts, command text, tool output, or
-transcript paths. Support export is an explicit command and passes through an
+transcript paths. Numeric Claude context, cost, and budget metadata can be
+stored with a session; delegated-agent identities and labels remain live-only
+and are stripped at persistence boundaries. Support export is an explicit command and passes through an
 allow-list plus defensive path, token, URL, and identifier redaction.
 Unexpected internal failures are written to a local Lookout output channel as
 fixed operation scopes and error types/codes only; free-form error messages are
@@ -216,6 +218,9 @@ stores and [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
 - Lookout never infers attention from terminal output. Custom agents must invoke
   the copied attention-hook command when they need to signal Lookout.
+- In-place restart requires VS Code shell-execution tracking and a confirmed
+  command end. After an untracked launch or extension-host reload, close the
+  terminal and launch a new agent instead of restarting into uncertain input.
 - Lifecycle hooks are quoted for the default terminal shell (PowerShell 5 and 7,
   cmd, and POSIX shells such as bash, zsh, and fish). With an unrecognized
   default shell, agents launch plainly and the session reports that hooks are

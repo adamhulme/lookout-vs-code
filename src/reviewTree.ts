@@ -13,6 +13,11 @@ import {
   type WorkspaceChange
 } from './gitReview';
 import type { SessionManager } from './sessionManager';
+import {
+  boundedReviewItemLimit,
+  normalizeReviewGlobs,
+  reviewSearchResultLimit
+} from './reviewSearchPolicy';
 import type { AgentSession, CommandResult } from './types';
 import type { ReviewPacket } from './verification/reviewPacket';
 import { VerificationManager } from './verification/verificationManager';
@@ -37,6 +42,7 @@ import type { ReviewContext } from './verification/verificationTypes';
 const BASELINE_SCHEME = 'lookout-baseline';
 const COMMAND_RESULT_SCHEME = 'lookout-command-result';
 const VERIFICATION_STORE_KEY = 'lookout.verificationStore.v1';
+const MAX_REVIEW_ROOTS = 32;
 type ReviewKind =
   | 'group'
   | 'image'
@@ -417,26 +423,38 @@ export class ReviewTreeProvider
     const generation = ++this.refreshGeneration;
     const changeGeneration = ++this.changeGeneration;
     const config = vscode.workspace.getConfiguration('lookout.review');
-    const max = config.get<number>('maxItemsPerGroup', 12);
+    const max = boundedReviewItemLimit(
+      config.get<number>('maxItemsPerGroup', 12)
+    );
     const showImages = config.get<boolean>('showRecentImages', false);
+    const imageGlobs = normalizeReviewGlobs(
+      [config.get<unknown>('imageGlob', '**/*.{png,jpg,jpeg,gif,webp}')],
+      ['**/*.{png,jpg,jpeg,gif,webp}']
+    );
+    const artifactGlobs = normalizeReviewGlobs(
+      config.get<unknown[]>('artifactGlobs'),
+      [
+        '**/{plans,docs}/**/*.{md,mdx,txt}',
+        '**/todos/**/*.{md,mdx,txt}',
+        '**/{TODOS,DESIGN,TESTPLAN}.{md,mdx,txt}'
+      ]
+    );
+    const searchLimit = reviewSearchResultLimit(max);
     const session = this.sessions.selectedSession;
     const [imageUris, planUris, worktreeChanges] = await Promise.all([
       showImages
         ? findFilesAcrossAgentRoots(
             this.sessions,
-            [config.get<string>('imageGlob', '**/*.{png,jpg,jpeg,gif,webp}')],
+            imageGlobs,
             '**/{node_modules,.git,out,dist}/**',
-            max * 8
+            searchLimit
           )
         : Promise.resolve([]),
       findFilesAcrossAgentRoots(
         this.sessions,
-        config.get<string[]>('artifactGlobs', [
-          '**/{plans,docs}/**/*.{md,mdx,txt}',
-          '**/todos/**/*.{md,mdx,txt}',
-          '**/{TODOS,DESIGN,TESTPLAN}.{md,mdx,txt}'
-        ]),
-        '**/{node_modules,.git,out,dist}/**'
+        artifactGlobs,
+        '**/{node_modules,.git,out,dist}/**',
+        searchLimit
       ),
       loadWorktreeChanges(this.sessions)
     ]);
@@ -1188,22 +1206,28 @@ async function findFilesAcrossAgentRoots(
   maxResultsPerRoot?: number
 ): Promise<vscode.Uri[]> {
   const roots = new Map<string, vscode.Uri>();
-  for (const folder of vscode.workspace.workspaceFolders ?? []) {
-    roots.set(normalizeRootKey(folder.uri.fsPath), folder.uri);
-  }
   for (const session of sessions.list()) {
     const root = session.baseline?.repoRoot ?? session.cwd;
     const resolved = path.resolve(root);
     roots.set(normalizeRootKey(resolved), vscode.Uri.file(resolved));
   }
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const key = normalizeRootKey(folder.uri.fsPath);
+    if (!roots.has(key)) {
+      roots.set(key, folder.uri);
+    }
+  }
 
+  const perPatternLimit = maxResultsPerRoot === undefined
+    ? undefined
+    : Math.max(1, Math.ceil(maxResultsPerRoot / Math.max(1, includes.length)));
   const matches = await Promise.all(
-    [...roots.values()].flatMap((root) => includes.map(async (include) => {
+    [...roots.values()].slice(0, MAX_REVIEW_ROOTS).flatMap((root) => includes.map(async (include) => {
       try {
         return await vscode.workspace.findFiles(
           new vscode.RelativePattern(root, include),
           exclude,
-          maxResultsPerRoot
+          perPatternLimit
         );
       } catch {
         return [];

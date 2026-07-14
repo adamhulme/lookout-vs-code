@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { runTests, runVSCodeCommand } from '@vscode/test-electron';
@@ -28,6 +34,12 @@ const profileRoot = path.join(
   '.vscode-test',
   `vsix-profile-${manifest.publisher}.${manifest.name}`
 );
+rmSync(profileRoot, {
+  recursive: true,
+  force: true,
+  maxRetries: 3,
+  retryDelay: 100
+});
 const profileArgs = [
   `--extensions-dir=${path.join(profileRoot, 'extensions')}`,
   `--user-data-dir=${path.join(profileRoot, 'user-data')}`

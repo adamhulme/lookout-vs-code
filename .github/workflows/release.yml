@@ -30,6 +30,9 @@ concurrency:
 
 env:
   NODE_VERSION: '24'
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  EXTENSION_ID: appoly.lookout
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
 
 jobs:
   build-artifact:
@@ -42,20 +45,27 @@ jobs:
       sha256: ${{ steps.prepare.outputs.sha256 }}
       version: ${{ steps.prepare.outputs.version }}
       vsix-file: ${{ steps.prepare.outputs.vsix_file }}
-    env:
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
     steps:
+      - name: Confirm manual dispatch uses the default branch workflow
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+
       - name: Check out the tagged source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
-      - name: Confirm the checkout is the requested tag
+      - name: Confirm the requested tag is on the default branch
         shell: bash
         run: |
           set -euo pipefail
           test "$(git describe --tags --exact-match)" = "$RELEASE_TAG"
+          git fetch --no-tags origin \
+            "$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          git merge-base --is-ancestor \
+            HEAD "refs/remotes/origin/$DEFAULT_BRANCH"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -86,14 +96,19 @@ jobs:
       - name: Verify the packaged contents
         run: npm run verify:vsix-contents
 
+      - name: Install and activate the exact packaged candidate
+        run: xvfb-run -a npm run verify:installed-vsix
+
       - name: Record candidate identity and SHA-256
         id: prepare
         shell: bash
         run: |
           set -euo pipefail
           node scripts/release-artifact.mjs prepare \
+            --manifest package.json \
             --tag "$RELEASE_TAG" \
             --commit "$(git rev-parse HEAD)" \
+            --extension-id "$EXTENSION_ID" \
             --output release-artifact \
             --github-output "$GITHUB_OUTPUT"
 
@@ -138,7 +153,7 @@ jobs:
       - name: Check out the release tooling
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ inputs.release_tag }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -160,8 +175,17 @@ jobs:
         id: verify
         run: >-
           node scripts/release-artifact.mjs verify
+          --manifest package.json
           --directory release-artifact
+          --tag "$RELEASE_TAG"
+          --commit "$(git rev-parse HEAD)"
+          --extension-id "$EXTENSION_ID"
           --github-output "$GITHUB_OUTPUT"
+
+      - name: Reinspect the downloaded VSIX contents
+        run: >-
+          node scripts/verify-vsix-contents.mjs
+          "${{ steps.verify.outputs.vsix_path }}"
 
       - name: Sign in to Microsoft Entra with GitHub OIDC
         uses: azure/login@1384c340ab2dda50fed2bee3041d1d87018aa5e8 # v2
@@ -191,7 +215,7 @@ jobs:
       - name: Check out the release tooling
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ inputs.release_tag }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -213,8 +237,17 @@ jobs:
         id: verify
         run: >-
           node scripts/release-artifact.mjs verify
+          --manifest package.json
           --directory release-artifact
+          --tag "$RELEASE_TAG"
+          --commit "$(git rev-parse HEAD)"
+          --extension-id "$EXTENSION_ID"
           --github-output "$GITHUB_OUTPUT"
+
+      - name: Reinspect the downloaded VSIX contents
+        run: >-
+          node scripts/verify-vsix-contents.mjs
+          "${{ steps.verify.outputs.vsix_path }}"
 
       - name: Publish the verified VSIX without repackaging
         env:

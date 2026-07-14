@@ -12,6 +12,14 @@ const ciWorkflow = readFileSync(
   path.join(repositoryRoot, '.github', 'workflows', 'ci.yml'),
   'utf8'
 );
+const installedVsixVerifier = readFileSync(
+  path.join(repositoryRoot, 'scripts', 'verify-vsix.mjs'),
+  'utf8'
+);
+const vsixContentsVerifier = readFileSync(
+  path.join(repositoryRoot, 'scripts', 'verify-vsix-contents.mjs'),
+  'utf8'
+);
 const allWorkflows = readdirSync(path.join(repositoryRoot, '.github', 'workflows'))
   .filter((file) => file.endsWith('.yml') || file.endsWith('.yaml'))
   .map((file) => readFileSync(path.join(repositoryRoot, '.github', 'workflows', file), 'utf8'))
@@ -24,6 +32,10 @@ test('release workflow packages once and promotes the artifact by ID', () => {
   assert.equal((workflow.match(/release-artifact\.mjs verify/g) ?? []).length, 2);
   assert.match(workflow, /compression-level: 0/);
   assert.match(workflow, /npm run verify:vsix-contents/);
+  assert.match(
+    workflow,
+    /run: xvfb-run -a npm run verify:installed-vsix/
+  );
   assert.doesNotMatch(workflow, /vsce ls/);
 });
 
@@ -42,6 +54,29 @@ test('registry publication is manual, explicit, and environment gated', () => {
   assert.match(workflow, /tenant-id:.*vars\.AZURE_TENANT_ID/);
   assert.match(workflow, /OVSX_PAT:.*secrets\.OVSX_PAT/);
   assert.doesNotMatch(workflow, /VSCE_PAT/);
+});
+
+test('release source and artifact identity are bound to protected inputs', () => {
+  assert.match(
+    workflow,
+    /DEFAULT_BRANCH:.*github\.event\.repository\.default_branch/
+  );
+  assert.match(
+    workflow,
+    /if: github\.event_name == 'workflow_dispatch'[\s\S]*test "\$GITHUB_REF" = "refs\/heads\/\$DEFAULT_BRANCH"/
+  );
+  assert.match(
+    workflow,
+    /git merge-base --is-ancestor[\s\\\r\n]+HEAD "refs\/remotes\/origin\/\$DEFAULT_BRANCH"/
+  );
+  assert.equal((workflow.match(/--manifest package\.json/g) ?? []).length, 3);
+  assert.equal((workflow.match(/--tag "\$RELEASE_TAG"/g) ?? []).length, 3);
+  assert.equal((workflow.match(/--commit /g) ?? []).length, 3);
+  assert.equal((workflow.match(/--extension-id "\$EXTENSION_ID"/g) ?? []).length, 3);
+  assert.equal(
+    (workflow.match(/node scripts\/verify-vsix-contents\.mjs/g) ?? []).length,
+    2
+  );
 });
 
 test('publisher clients receive a verified package path and cannot package implicitly', () => {
@@ -72,4 +107,18 @@ test('Linux installed-VSIX smoke tests run under a virtual display', () => {
     /- run: xvfb-run -a npm run verify:vsix\r?\n\s+if: runner\.os == 'Linux' && matrix\.vscode == 'stable'/
   );
   assert.doesNotMatch(ciWorkflow, /- run: npm run verify:vsix\s*$/m);
+});
+
+test('release validation uses a fresh profile and requires listing documents', () => {
+  const removeProfile = installedVsixVerifier.indexOf('rmSync(profileRoot');
+  const createWorkspace = installedVsixVerifier.indexOf(
+    "mkdirSync(path.join(workspaceRoot, '.vscode')"
+  );
+  assert.ok(removeProfile >= 0, 'installed VSIX profile is not removed');
+  assert.ok(
+    createWorkspace > removeProfile,
+    'installed VSIX workspace must be created only after profile cleanup'
+  );
+  assert.match(vsixContentsVerifier, /'extension\/changelog\.md'/);
+  assert.match(vsixContentsVerifier, /'extension\/license\.txt'/);
 });

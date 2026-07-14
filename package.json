@@ -53,7 +53,10 @@
       "restrictedConfigurations": [
         "lookout.codex.command",
         "lookout.claude.command",
-        "lookout.usage.codex.executable"
+        "lookout.usage.codex.executable",
+        "lookout.review.showRecentImages",
+        "lookout.review.imageGlob",
+        "lookout.review.artifactGlobs"
       ]
     },
     "virtualWorkspaces": {
@@ -83,7 +86,8 @@
     "test:provider-compat": "npm run clean && npm run compile && node --test out/test/providerCompatibility.test.js",
     "compat:providers": "node scripts/provider-compat.mjs",
     "test:integration": "npm run compile && vscode-test --label integration --fail-zero --forbid-only",
-    "verify:vsix": "npm run vsix && node scripts/verify-vsix.mjs",
+    "verify:vsix": "npm run vsix && npm run verify:installed-vsix",
+    "verify:installed-vsix": "node scripts/verify-vsix.mjs",
     "verify:vsix-contents": "node scripts/verify-vsix-contents.mjs",
     "check": "npm run check:repository && npm run lint && npm test",
     "check:all": "npm run check && npm run test:integration",
@@ -95,8 +99,8 @@
   "devDependencies": {
     "@eslint/js": "^9.31.0",
     "@types/mocha": "^10.0.10",
-    "@types/node": "^24.0.13",
-    "@types/vscode": "^1.96.0",
+    "@types/node": "20.17.0",
+    "@types/vscode": "1.96.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.0.0",
     "@vscode/vsce": "^3.9.2",

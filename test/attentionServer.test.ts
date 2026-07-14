@@ -222,6 +222,33 @@ test('accepts authenticated agent and usage events on loopback', async (context)
       status: 'attention'
     });
     assert.equal(unauthorized.status, 404);
+
+    const rejectedHook = await runNotify(
+      { ...endpoint, token: 'wrong-token' },
+      ['--hook', 'codex', 'turn-end'],
+      { hook_event_name: 'Stop' }
+    );
+    assert.equal(rejectedHook.code, 0);
+    assert.equal(rejectedHook.stdout.trim(), '{}');
+    assert.equal(rejectedHook.stderr, '');
+
+    server.dispose();
+    const staleCodexHook = await runNotify(
+      endpoint,
+      ['--hook', 'codex', 'turn-end'],
+      { hook_event_name: 'Stop' }
+    );
+    assert.equal(staleCodexHook.code, 0);
+    assert.equal(staleCodexHook.stdout.trim(), '{}');
+    assert.equal(staleCodexHook.stderr, '');
+    const staleClaudeHook = await runNotify(
+      endpoint,
+      ['--hook', 'claude', 'turn-end'],
+      { hook_event_name: 'Stop' }
+    );
+    assert.equal(staleClaudeHook.code, 0);
+    assert.equal(staleClaudeHook.stdout, '');
+    assert.equal(staleClaudeHook.stderr, '');
   } finally {
     server.dispose();
   }
@@ -247,7 +274,7 @@ async function runNotify(
   args: readonly string[],
   input: object,
   extraEnvironment: NodeJS.ProcessEnv = {}
-): Promise<{ code: number | null; stdout: string }> {
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const child = spawn(
     process.execPath,
     [path.resolve(__dirname, '../src/notify.js'), ...args],
@@ -263,11 +290,16 @@ async function runNotify(
     }
   );
   let stdout = '';
+  let stderr = '';
   child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
   child.stdout.on('data', (chunk: string) => {
     stdout += chunk;
   });
+  child.stderr.on('data', (chunk: string) => {
+    stderr += chunk;
+  });
   child.stdin.end(JSON.stringify(input));
   const [code] = (await once(child, 'close')) as [number | null];
-  return { code, stdout };
+  return { code, stdout, stderr };
 }

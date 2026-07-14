@@ -40,7 +40,7 @@
   advisory cross-platform provider compatibility lab with deterministic fake
   CLIs.
 - Add a passive Getting Started walkthrough covering profiles, native launch,
-  Inbox attention, Review, and provider continuity.
+  agent-row attention routing, Review, and provider continuity.
 - Only warn about uncommitted work when removing an agent. Clean commits made
   since launch no longer trigger the changes warning, and the prompt now makes
   clear that removing an agent does not delete worktree files or Git commits.

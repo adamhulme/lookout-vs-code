@@ -145,9 +145,11 @@ export function inspectVsix(vsixPath = expectedVsixPath()) {
             'extension/out/src/extension.js',
             'extension/resources/icon.png',
             'extension/readme.md',
+            'extension/changelog.md',
             'extension/privacy.md',
             'extension/security.md',
-            'extension/support.md'
+            'extension/support.md',
+            'extension/license.txt'
           ]) {
             if (!entries.some((entry) => entry.toLowerCase() === required)) {
               fail(`VSIX is missing required file: ${required}`);

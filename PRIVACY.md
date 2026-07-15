@@ -28,8 +28,17 @@ its UI:
   those results;
 - a random bearer token and loopback endpoint used by session-local attention
   hooks;
-- recent Claude usage-limit snapshots and whether the one-time Codex hook notice
-  has been acknowledged.
+- recent Claude account usage-limit snapshots; per-session numeric Claude
+  context/input/output token counts, context-window size and percentage,
+  estimated cost when reported, observation time, and configured numeric Codex
+  or Claude budget/alert limits. Live delegated-agent IDs, labels, status, and
+  token counts are processed in memory so the UI can attribute current work,
+  but delegated identities and labels are removed from persisted snapshots;
+- whether the one-time Codex hook notice has been acknowledged;
+- a local Lookout log output channel for unexpected background or command
+  failures. It records only fixed operation scopes, error type names, and short
+  validated error codes—not error messages, paths, commands, prompts, IDs,
+  tokens, or output. VS Code owns the local output-channel lifecycle.
 
 When `lookout.history.globalEnabled` is enabled (the default), Lookout also
 keeps a bounded cross-project history file in its extension-global storage on
@@ -61,8 +70,10 @@ workspace paths, provider and Lookout IDs, commands, URLs and endpoint details,
 auth material, prompts, transcripts, events, and output. No support bundle is
 created or uploaded automatically.
 
-The extension's global storage can also contain a generated Claude settings
-file for session-local hooks and generated WAV files for the attention bell.
+The extension's global storage can also contain generated per-session Claude
+settings files for session-local hooks and generated WAV files for the
+attention bell. Lookout deletes a session's generated settings file when its
+terminal closes or the session is removed.
 Lookout does not read provider authentication files.
 
 ## Local processes and network access
@@ -87,10 +98,17 @@ proxy or inspect their network traffic.
 ## User controls
 
 You can disable either provider, its lifecycle integration, its usage provider,
-notifications, sounds, or optional image discovery in VS Code Settings. Removing
-an agent from the Agents view removes its persisted session row and Lookout event
-history. It does not remove provider-owned session history. VS Code manages
-the remaining extension storage as part of the installed extension profile.
+notifications, sounds, or optional image discovery in VS Code Settings. The
+`lookout.usage.claude.enabled` setting controls whether Claude account usage is
+shown; it does not disable the session-local status-line bridge. To stop Claude
+usage and token collection for newly launched sessions, disable
+`lookout.usage.claude.statusLineIntegration` before launching or restarting
+Claude. An already running Claude session keeps the temporary settings with
+which it was launched until that process ends. Removing an agent from the
+Agents view removes its persisted session row and Lookout event history. It
+does not remove provider-owned session history or the latest account-level
+Claude usage snapshot. VS Code manages the remaining extension storage as part
+of the installed extension profile.
 
 Questions or privacy reports can be filed through the support channels in
 [SUPPORT.md](SUPPORT.md). Security-sensitive reports should follow

@@ -1,6 +1,8 @@
 import * as path from 'node:path';
+import { directCommandExecutable } from './directCommand';
 
-const SHELL_OPERATORS = /[\n;&|<>`$]/;
+export const PROVIDER_ACTIVITY_TOOL_MATCHER =
+  '^(?:Bash|codex_apps\\..+|mcp__.+)$';
 
 /**
  * The shell that will parse a launch command typed into a terminal. Quoting
@@ -19,11 +21,11 @@ export type LaunchShell =
 
 export function classifyShell(
   shellPath: string | undefined,
-  platform: NodeJS.Platform = process.platform
+  _platform: NodeJS.Platform = process.platform
 ): LaunchShell {
   const trimmed = shellPath?.trim();
   if (!trimmed) {
-    return platform === 'win32' ? 'unknown' : 'posix';
+    return 'unknown';
   }
   const base = path
     .basename(trimmed.replace(/\\/g, '/'))
@@ -47,7 +49,7 @@ export function classifyShell(
   ) {
     return 'posix';
   }
-  return platform === 'win32' ? 'unknown' : 'posix';
+  return 'unknown';
 }
 
 /** The shell a provider uses to run hook command strings it was configured with. */
@@ -106,17 +108,17 @@ export function withCodexLifecycleIntegration(
         'SubagentStop',
         hookCommand(helperPath, 'background-stop', undefined, hookShell)
       ),
-      // Surface long-running shell commands (builds, tests, dev servers). The
-      // matcher limits firing to the shell tool, whose canonical name is Bash.
+      // Surface shell commands and MCP calls while they execute. The bridge
+      // allow-lists the safe label and drops arguments for non-shell tools.
       codexHookOverride(
         'PreToolUse',
         hookCommand(helperPath, 'command-start', undefined, hookShell),
-        '^Bash$'
+        PROVIDER_ACTIVITY_TOOL_MATCHER
       ),
       codexHookOverride(
         'PostToolUse',
         hookCommand(helperPath, 'command-stop', undefined, hookShell),
-        '^Bash$'
+        PROVIDER_ACTIVITY_TOOL_MATCHER
       ),
       codexHookOverride(
         'Stop',
@@ -143,17 +145,41 @@ export function withCodexLifecycleIntegration(
   );
 }
 
+export function withCodexTokenBudget(
+  command: string,
+  limitTokens: number,
+  launchShell: LaunchShell
+): string {
+  const limit = Math.floor(limitTokens);
+  if (
+    limit <= 0 ||
+    !isDirectAgentCommand(command, 'codex') ||
+    hasCodexRolloutBudgetOverride(command)
+  ) {
+    return command;
+  }
+  const overrides = [
+    'features.rollout_budget.enabled=true',
+    `features.rollout_budget.limit_tokens=${limit}`,
+    // Current Codex builds require this field whenever rollout_budget is
+    // enabled. An empty list keeps Lookout from inventing reminder thresholds
+    // while retaining Codex's initial budget notice and hard limit.
+    'features.rollout_budget.reminder_at_remaining_tokens=[]'
+  ];
+  return overrides.reduce(
+    (result, override) =>
+      `${result} -c ${
+        launchShell === 'unknown' ? override : shellQuote(override, launchShell)
+      }`,
+    command
+  );
+}
+
 export function isDirectAgentCommand(
   command: string,
   executableName: 'claude' | 'codex'
 ): boolean {
-  if (SHELL_OPERATORS.test(command)) {
-    return false;
-  }
-  const firstToken = command
-    .trim()
-    .split(/\s+/, 1)[0]
-    ?.replace(/^['"]|['"]$/g, '');
+  const firstToken = directCommandExecutable(command);
   if (!firstToken) {
     return false;
   }
@@ -226,6 +252,12 @@ function hasCodexNotifyOverride(command: string): boolean {
 
 function hasCodexHookOverride(command: string): boolean {
   return /(?:^|\s)(?:-c|--config)(?:\s+|=)\s*['"]?(?:features\.hooks|hooks\.)/.test(
+    command
+  );
+}
+
+function hasCodexRolloutBudgetOverride(command: string): boolean {
+  return /(?:^|\s)(?:-c|--config)(?:\s+|=)\s*['"]?features\.rollout_budget\./.test(
     command
   );
 }

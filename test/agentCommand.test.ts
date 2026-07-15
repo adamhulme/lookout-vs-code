@@ -4,7 +4,8 @@ import {
   classifyShell,
   isDirectAgentCommand,
   shellQuote,
-  withCodexLifecycleIntegration
+  withCodexLifecycleIntegration,
+  withCodexTokenBudget
 } from '../src/agentCommand';
 
 test('adds session-only Codex turn and delegated-agent lifecycle events', () => {
@@ -34,12 +35,29 @@ test('adds session-only Codex turn and delegated-agent lifecycle events', () => 
   assert.match(command, /--hook codex background-start/);
   assert.match(
     command,
-    /hooks\.PreToolUse=\[\{ matcher = "\^Bash\$", .*--hook codex command-start/
+    /hooks\.PreToolUse=.*--hook codex command-start/
   );
   assert.match(
     command,
-    /hooks\.PostToolUse=\[\{ matcher = "\^Bash\$", .*--hook codex command-stop/
+    /hooks\.PostToolUse=.*--hook codex command-stop/
   );
+  assert.match(command, /codex_apps/);
+  assert.match(command, /mcp__/);
+});
+
+test('adds a native Codex rollout token budget without replacing user overrides', () => {
+  const command = withCodexTokenBudget('codex --no-alt-screen', 50_000, 'posix');
+  assert.match(command, /features\.rollout_budget\.enabled=true/);
+  assert.match(command, /features\.rollout_budget\.limit_tokens=50000/);
+  assert.match(
+    command,
+    /features\.rollout_budget\.reminder_at_remaining_tokens=\[\]/
+  );
+
+  const explicit =
+    "codex -c 'features.rollout_budget.limit_tokens=1234'";
+  assert.equal(withCodexTokenBudget(explicit, 50_000, 'posix'), explicit);
+  assert.equal(withCodexTokenBudget('wrapper codex', 50_000, 'posix'), 'wrapper codex');
 });
 
 test('preserves explicit Codex notifier and hook overrides', () => {
@@ -74,10 +92,15 @@ test('preserves explicit Codex notifier and hook overrides', () => {
 
 test('recognizes direct provider commands without accepting shell expressions', () => {
   assert.equal(isDirectAgentCommand('/usr/bin/codex resume', 'codex'), true);
+  assert.equal(
+    isDirectAgentCommand('"C:\\Program Files\\codex.exe" resume', 'codex'),
+    true
+  );
   assert.equal(isDirectAgentCommand('claude --model opus', 'claude'), true);
   assert.equal(isDirectAgentCommand('codex && echo done', 'codex'), false);
   assert.equal(isDirectAgentCommand('codex $(pwd)', 'codex'), false);
   assert.equal(isDirectAgentCommand('codex `pwd`', 'codex'), false);
+  assert.equal(isDirectAgentCommand('"codex.exe"suffix', 'codex'), false);
   assert.equal(shellQuote("it's ready", 'posix'), "'it'\\''s ready'");
 });
 
@@ -105,8 +128,10 @@ test('classifies terminal shells from their executable paths', () => {
     'posix'
   );
   assert.equal(classifyShell('C:\\tools\\nu.exe', 'win32'), 'unknown');
+  assert.equal(classifyShell('/usr/bin/nu', 'linux'), 'unknown');
+  assert.equal(classifyShell('/usr/bin/elvish', 'linux'), 'unknown');
   assert.equal(classifyShell(undefined, 'win32'), 'unknown');
-  assert.equal(classifyShell(undefined, 'linux'), 'posix');
+  assert.equal(classifyShell(undefined, 'linux'), 'unknown');
 });
 
 test('skips Codex hook injection when the launch shell is unknown', () => {

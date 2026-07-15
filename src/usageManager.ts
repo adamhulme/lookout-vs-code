@@ -48,6 +48,9 @@ export class UsageManager implements vscode.Disposable {
     );
     this.disposables.push(
       sessions.onDidReceiveUsage((event) => {
+        if (event.kind === 'delegated-agents') {
+          return;
+        }
         const snapshot: UsageSnapshot = {
           provider: 'claude',
           status: event.windows.length > 0 ? 'available' : 'waiting',
@@ -128,9 +131,14 @@ export class UsageManager implements vscode.Disposable {
     this.changedEmitter.dispose();
   }
 
-  private setSnapshot(snapshot: UsageSnapshot): void {
+  private setSnapshot(snapshot: UsageSnapshot): boolean {
+    const current = this.snapshots.get(snapshot.provider);
+    if (current && snapshot.observedAt < current.observedAt) {
+      return false;
+    }
     this.snapshots.set(snapshot.provider, snapshot);
     this.changedEmitter.fire();
+    return true;
   }
 
   private async acceptClaudeSnapshot(snapshot: UsageSnapshot): Promise<void> {

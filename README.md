@@ -99,7 +99,8 @@ provider's own CLI before relying on lifecycle or usage information.
    your layout better.
 4. Give each session a useful label, then let agents work in parallel. Select a
    row or use **Lookout: Focus Next Agent Needing Attention** to jump directly to
-   the terminal that needs you.
+   the terminal that needs you. Drag Current Workspace rows to keep agents in
+   your preferred order; Lookout remembers that order for the workspace.
 5. Use **Review** to inspect native diffs and plans, run tasks or tests, open
    Source Control, and return to the agent with feedback.
 
@@ -118,7 +119,6 @@ modifies your user or repository Claude settings.
 | `Lookout: Adopt Existing Terminal as Agent…` | Add an existing native terminal to the Agents view. |
 | `Lookout: Focus Agent…` | Jump to any named agent. |
 | `Lookout: Focus Next Agent Needing Attention` | Triage the next unread session. |
-| `Lookout: Browse Agent History` | Inspect resumable and terminal-only Lookout records. |
 | `Lookout: Configure Cross-Window Coordination` | Enable or inspect the experimental same-host live coordinator. |
 | `Lookout: Launch Agent from Template…` | Recreate a saved profile/folder/worktree/review recipe. |
 | `Lookout: Open Review Layout` | Restore a two-column agent/review layout. |
@@ -144,6 +144,10 @@ The most common settings are:
   `lookout.claude.lifecycleIntegration` — session-local lifecycle hooks;
 - `lookout.usage.codex.enabled` and `lookout.usage.claude.enabled` — usage
   providers and UI;
+- `lookout.usage.codex.tokenBudget` — apply Codex's provider-managed rollout
+  token budget to newly launched direct Codex sessions (`0` disables it);
+- `lookout.usage.claude.contextWarningTokens` — highlight a Claude session
+  when its live context reaches the configured size (`0` disables it);
 - `lookout.terminals.location` — `panel` (default) or `editor`;
 - `lookout.notifyOnAttention`, `lookout.notifyOnTurnComplete`, and
   `lookout.notifyOnAgentExit` — notification behavior;
@@ -152,18 +156,23 @@ The most common settings are:
 - `lookout.review.showRecentImages` — opt in to recent-image scanning.
 - `lookout.review.captureCommandOutput` — globally opt in to transient,
   bounded Codex/Claude command results for newly launched sessions.
-- `lookout.history.globalEnabled` — retain bounded host-local history across
-  projects; enabled by default and never registered for Settings Sync.
+- `lookout.history.globalEnabled` — retain bounded host-local session metadata
+  for continuation and collision safety; enabled by default and never registered
+  for Settings Sync.
 - `lookout.experimental.crossWindowCoordination` — share live metadata between
   Lookout windows on the same execution host; disabled by default.
 
-Codex usage comes from the CLI's app-server JSON-RPC rate-limit method. Claude
-usage comes from its documented custom status-line JSON after the first response
-in a Lookout-launched session. Both are account-wide limits, not per-terminal
-budgets.
+Codex account usage comes from the CLI's app-server JSON-RPC rate-limit method.
+Claude account usage comes from its documented custom status-line JSON after the
+first response in a Lookout-launched session. Those provider windows are
+account-wide. The same Claude bridge also reports per-session live context,
+estimated cost when available, and delegated-agent token counts; current-context
+tokens are not cumulative spend. Codex can additionally receive a native rollout
+token budget at launch. Claude's interactive CLI exposes no equivalent hard
+token cap, so its configurable per-session threshold is warning-only.
 
 The Usage Limits view distinguishes available, stale, exhausted, and reset-due
-provider windows:
+provider windows and lists tracked per-agent token data and budgets:
 
 ![Lookout Usage Limits view showing Codex and Claude quota windows and reset times](assets/screenshots/usage-limits.png)
 
@@ -186,8 +195,13 @@ are disabled until the workspace is trusted.
 Lookout persists opaque provider session IDs only when documented lifecycle
 hooks report them. Its bounded event ledger stores fixed operational event kinds
 and read state, never hook messages, prompts, command text, tool output, or
-transcript paths. Support export is an explicit command and passes through an
+transcript paths. Numeric Claude context, cost, and budget metadata can be
+stored with a session; delegated-agent identities and labels remain live-only
+and are stripped at persistence boundaries. Support export is an explicit command and passes through an
 allow-list plus defensive path, token, URL, and identifier redaction.
+Unexpected internal failures are written to a local Lookout output channel as
+fixed operation scopes and error types/codes only; free-form error messages are
+not logged or included in support exports.
 
 Cross-project history additionally stores the workspace/folder URI, working
 directory, user-visible label, coarse host kind, provider identity, fixed
@@ -205,6 +219,9 @@ stores and [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
 - Lookout never infers attention from terminal output. Custom agents must invoke
   the copied attention-hook command when they need to signal Lookout.
+- In-place restart requires VS Code shell-execution tracking and a confirmed
+  command end. After an untracked launch or extension-host reload, close the
+  terminal and launch a new agent instead of restarting into uncertain input.
 - Lifecycle hooks are quoted for the default terminal shell (PowerShell 5 and 7,
   cmd, and POSIX shells such as bash, zsh, and fish). With an unrecognized
   default shell, agents launch plainly and the session reports that hooks are
@@ -238,13 +255,16 @@ npm run check
 npm run test:integration
 npm run compat:providers
 npm run vsix
+npm run verify:vsix
 ```
 
 The extension-host suite exercises activation, terminal launch and splitting,
 authenticated attention routing, Git review baselines, host-local history
 projection, and terminal closure. Domain tests additionally exercise concurrent
 history writers and real authenticated loopback coordinator clients.
-CI runs Stable on Linux, Windows, and macOS, plus VS Code 1.96.0 on Linux. See
+CI runs Stable on Linux, Windows, and macOS, plus VS Code 1.96.0 on Linux. The
+VSIX check also inspects an allow-listed package, installs it into an isolated
+profile, activates the installed extension, and runs Doctor. See
 [docs/TESTING.md](docs/TESTING.md) for test details and
 [docs/RELEASE.md](docs/RELEASE.md) for the release checklist.
 

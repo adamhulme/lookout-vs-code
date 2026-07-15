@@ -127,6 +127,25 @@ test('accepts authenticated agent and usage events on loopback', async (context)
       command: 'npm test'
     });
 
+    const mcpHookResult = await runNotify(
+      endpoint,
+      ['--hook', 'codex', 'command-start'],
+      {
+        tool_name: 'codex_apps.github.fetch_pr',
+        call_id: 'mcp-1',
+        tool_input: { repository: 'private/repository', pull_number: 4 }
+      }
+    );
+    assert.equal(mcpHookResult.code, 0);
+    assert.equal(mcpHookResult.stdout.trim(), '{}');
+    assert.deepEqual(agentEvents[7], {
+      kind: 'command-start',
+      sessionId: 'session-from-hook',
+      commandId: 'mcp-1',
+      command: 'codex_apps.github.fetch_pr',
+      activityKind: 'mcp'
+    });
+
     const resultHook = await runNotify(
       endpoint,
       ['--hook', 'claude', 'command-stop'],
@@ -140,7 +159,7 @@ test('accepts authenticated agent and usage events on loopback', async (context)
       { LOOKOUT_CAPTURE_COMMAND_OUTPUT: '1' }
     );
     assert.equal(resultHook.code, 0);
-    assert.deepEqual(agentEvents[7], {
+    assert.deepEqual(agentEvents[8], {
       kind: 'command-stop',
       sessionId: 'session-from-hook',
       commandId: 'result-1',
@@ -171,22 +190,114 @@ test('accepts authenticated agent and usage events on loopback', async (context)
       {
         provider: 'claude',
         observedAt: 42,
+        sessionId: 'session-1',
         windows: [
           { id: 'five_hour', label: '5 hour', usedPercent: 150 }
-        ]
+        ],
+        tokenUsage: {
+          source: 'claude-statusline',
+          observedAt: 42,
+          contextTokens: 12_000,
+          inputTokens: 11_000,
+          outputTokens: 1_000,
+          contextUsedPercent: 6,
+          delegatedAgents: [
+            { id: 'child-1', label: 'Review', tokenCount: 4_000 }
+          ]
+        }
       }
     );
     assert.equal(usageResponse.status, 204);
-    assert.equal(usageEvents[0]?.windows[0]?.usedPercent, 100);
+    const usage = usageEvents[0];
+    assert.ok(usage && usage.kind !== 'delegated-agents');
+    assert.equal(usage.windows[0]?.usedPercent, 100);
+    assert.equal(usage.sessionId, 'session-1');
+    assert.equal(usage.tokenUsage?.contextTokens, 12_000);
+    assert.equal(
+      usage.tokenUsage?.delegatedAgents[0]?.tokenCount,
+      4_000
+    );
+
+    const delegatedResponse = await post(
+      endpoint.url.replace(/\/events$/, '/usage'),
+      endpoint.token,
+      {
+        kind: 'delegated-agents',
+        provider: 'claude',
+        observedAt: 43,
+        sessionId: 'session-1',
+        delegatedAgents: [
+          { id: 'child-1', label: 'Review', tokenCount: 4_500 }
+        ]
+      }
+    );
+    assert.equal(delegatedResponse.status, 204);
+    const delegated = usageEvents[1];
+    assert.ok(delegated && delegated.kind === 'delegated-agents');
+    assert.equal(delegated.delegatedAgents[0]?.tokenCount, 4_500);
 
     const unauthorized = await post(endpoint.url, 'wrong-token', {
       sessionId: 'session-1',
       status: 'attention'
     });
     assert.equal(unauthorized.status, 404);
+
+    const rejectedHook = await runNotify(
+      { ...endpoint, token: 'wrong-token' },
+      ['--hook', 'codex', 'turn-end'],
+      { hook_event_name: 'Stop' }
+    );
+    assert.equal(rejectedHook.code, 0);
+    assert.equal(rejectedHook.stdout.trim(), '{}');
+    assert.equal(rejectedHook.stderr, '');
+
+    server.dispose();
+    const staleCodexHook = await runNotify(
+      endpoint,
+      ['--hook', 'codex', 'turn-end'],
+      { hook_event_name: 'Stop' }
+    );
+    assert.equal(staleCodexHook.code, 0);
+    assert.equal(staleCodexHook.stdout.trim(), '{}');
+    assert.equal(staleCodexHook.stderr, '');
+    const staleClaudeHook = await runNotify(
+      endpoint,
+      ['--hook', 'claude', 'turn-end'],
+      { hook_event_name: 'Stop' }
+    );
+    assert.equal(staleClaudeHook.code, 0);
+    assert.equal(staleClaudeHook.stdout, '');
+    assert.equal(staleClaudeHook.stderr, '');
   } finally {
     server.dispose();
   }
+});
+
+test('provider hooks fail open when their Lookout bridge is stale', async () => {
+  const result = await runNotify(
+    {
+      url: 'http://127.0.0.1:1/events',
+      token: 'stale-bridge-token'
+    },
+    ['--hook', 'codex', 'turn-end'],
+    { hook_event_name: 'Stop' }
+  );
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout.trim(), '{}');
+});
+
+test('custom attention commands report stale bridge delivery failures', async () => {
+  const result = await runNotify(
+    {
+      url: 'http://127.0.0.1:1/events',
+      token: 'stale-bridge-token'
+    },
+    ['attention'],
+    {}
+  );
+  assert.equal(result.code, 1);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, 'Lookout notification failed\n');
 });
 
 function post(url: string, token: string, value: object): Promise<Response> {
@@ -209,7 +320,7 @@ async function runNotify(
   args: readonly string[],
   input: object,
   extraEnvironment: NodeJS.ProcessEnv = {}
-): Promise<{ code: number | null; stdout: string }> {
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const child = spawn(
     process.execPath,
     [path.resolve(__dirname, '../src/notify.js'), ...args],
@@ -225,11 +336,16 @@ async function runNotify(
     }
   );
   let stdout = '';
+  let stderr = '';
   child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
   child.stdout.on('data', (chunk: string) => {
     stdout += chunk;
   });
+  child.stderr.on('data', (chunk: string) => {
+    stderr += chunk;
+  });
   child.stdin.end(JSON.stringify(input));
   const [code] = (await once(child, 'close')) as [number | null];
-  return { code, stdout };
+  return { code, stdout, stderr };
 }

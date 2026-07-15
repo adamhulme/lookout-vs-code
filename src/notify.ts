@@ -25,6 +25,7 @@ const actions = new Set<EventAction>([
   'command-stop',
   'session-start'
 ]);
+const MAX_STDIN_BYTES = 64 * 1024;
 
 async function main(): Promise<void> {
   const parsedArguments = parseArguments(process.argv.slice(2));
@@ -41,6 +42,10 @@ async function main(): Promise<void> {
     return;
   }
   const stdinMessage = parsedArguments.hookProvider ? await readStdin() : '';
+  if (stdinMessage === undefined) {
+    acknowledge(parsedArguments.hookProvider);
+    return;
+  }
   const providerPayload = parseRecord(
     parsedArguments.payloadArgument || stdinMessage
   );
@@ -56,9 +61,9 @@ async function main(): Promise<void> {
       process.env.LOOKOUT_CAPTURE_COMMAND_OUTPUT === '1'
   });
 
-  // PreToolUse/PostToolUse can fire for tools other than the shell (apply_patch,
-  // Edit, MCP calls) when a matcher lets them through. Those carry no command,
-  // so there is nothing to surface — acknowledge the hook and exit quietly.
+  // PreToolUse/PostToolUse can fire for unrelated tools when a matcher lets
+  // them through. Shell commands and allow-listed MCP identifiers normalize to
+  // a safe label; everything else is acknowledged and dropped quietly.
   if (
     (event.kind === 'command-start' || event.kind === 'command-stop') &&
     !event.command
@@ -100,10 +105,12 @@ async function main(): Promise<void> {
       req.destroy(new Error('Lookout notification timed out'));
     });
     req.end(body);
+  }).catch((error: unknown) => {
+    if (!parsedArguments.hookProvider) {
+      throw error;
+    }
   });
-  if (parsedArguments.hookProvider === 'codex') {
-    process.stdout.write('{}\n');
-  }
+  acknowledge(parsedArguments.hookProvider);
 }
 
 interface ParsedArguments {
@@ -166,18 +173,41 @@ function parseRecord(input: string): Record<string, unknown> | undefined {
   }
 }
 
-async function readStdin(): Promise<string> {
+async function readStdin(): Promise<string | undefined> {
   if (process.stdin.isTTY) {
     return '';
   }
   const chunks: Buffer[] = [];
+  let total = 0;
   for await (const chunk of process.stdin) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > MAX_STDIN_BYTES) {
+      return undefined;
+    }
+    chunks.push(buffer);
   }
   return Buffer.concat(chunks).toString('utf8').trim();
 }
 
-void main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+function acknowledge(provider: HookProvider | undefined): void {
+  if (provider === 'codex') {
+    process.stdout.write('{}\n');
+  }
+}
+
+void main().catch(() => {
+  const values = process.argv.slice(2);
+  const hookIndex = values.indexOf('--hook');
+  const candidate = hookIndex >= 0 ? values[hookIndex + 1] : undefined;
+  const provider =
+    candidate === 'codex' || candidate === 'claude'
+      ? candidate
+      : undefined;
+  if (provider) {
+    acknowledge(provider);
+    return;
+  }
+  process.stderr.write('Lookout notification failed\n');
   process.exitCode = 1;
 });

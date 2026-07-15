@@ -1,5 +1,11 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import type {
+  CoordinatedSession,
+  CoordinatedWindow
+} from './coordinationModel';
+import type { CoordinationService } from './coordinationService';
+import { dedupeCoordinatedSessions } from './historyQuery';
 import type { SessionEvent } from './sessionEvents';
 import type { SessionManager } from './sessionManager';
 import {
@@ -25,6 +31,27 @@ const STATUS_ICONS: Record<SessionStatus, vscode.ThemeIcon> = {
   unknown: new vscode.ThemeIcon('question'),
   closed: new vscode.ThemeIcon('circle-slash')
 };
+
+export type SessionTreeElement =
+  | SessionGroupItem
+  | SessionTreeItem
+  | LiveSessionTreeItem;
+
+export class SessionGroupItem extends vscode.TreeItem {
+  public constructor(
+    public readonly group: 'current' | 'live',
+    label: string,
+    count: number
+  ) {
+    super(label, vscode.TreeItemCollapsibleState.Expanded);
+    this.id = `session-group-${group}`;
+    this.contextValue = `lookout.sessionGroup.${group}`;
+    this.description = String(count);
+    this.iconPath = group === 'current'
+      ? new vscode.ThemeIcon('window')
+      : new vscode.ThemeIcon('broadcast');
+  }
+}
 
 export class SessionTreeItem extends vscode.TreeItem {
   public constructor(
@@ -72,6 +99,42 @@ export class SessionTreeItem extends vscode.TreeItem {
   }
 }
 
+export class LiveSessionTreeItem extends vscode.TreeItem {
+  public constructor(
+    public readonly coordinatedWindow: CoordinatedWindow,
+    public readonly coordinatedSession: CoordinatedSession
+  ) {
+    super(coordinatedSession.label, vscode.TreeItemCollapsibleState.None);
+    this.id = `live-${coordinatedWindow.windowId}-${coordinatedSession.sessionId}`;
+    this.contextValue = 'lookout.liveSession';
+    this.description = `${coordinatedWindow.workspaceLabel} · ${coordinatedSession.status}${coordinatedSession.unread ? ' · unread' : ''}`;
+    this.iconPath = coordinatedSession.status === 'attention' &&
+      coordinatedSession.unread
+      ? new vscode.ThemeIcon(
+          'bell-dot',
+          new vscode.ThemeColor('list.warningForeground')
+        )
+      : new vscode.ThemeIcon('broadcast');
+    this.tooltip = [
+      coordinatedSession.label,
+      `Owning project: ${coordinatedWindow.workspaceLabel}`,
+      `Provider: ${coordinatedSession.kind}`,
+      `Live status: ${coordinatedSession.status}`,
+      `Execution host: ${hostLabel(coordinatedWindow.hostKind)}`,
+      `Lease expires: ${new Date(coordinatedWindow.leaseExpiresAt).toLocaleTimeString()}`,
+      'Lookout will ask the owning window to reveal this terminal.'
+    ].join('\n');
+    this.command = {
+      command: 'lookout.focusRemoteSession',
+      title: 'Focus Agent in Owning Window',
+      arguments: [this]
+    };
+    this.accessibilityInformation = {
+      label: `${coordinatedSession.label}, ${coordinatedWindow.workspaceLabel}, live ${coordinatedSession.status}`
+    };
+  }
+}
+
 function integrationLabel(
   lifecycle: AgentSession['integration']['lifecycle']
 ): string {
@@ -92,27 +155,69 @@ function integrationLabel(
 }
 
 export class SessionTreeProvider
-  implements vscode.TreeDataProvider<SessionTreeItem>, vscode.Disposable
+  implements vscode.TreeDataProvider<SessionTreeElement>, vscode.Disposable
 {
   private readonly changedEmitter = new vscode.EventEmitter<void>();
-  private readonly managerSubscription: vscode.Disposable;
+  private readonly subscriptions: vscode.Disposable[];
   public readonly onDidChangeTreeData = this.changedEmitter.event;
 
-  public constructor(private readonly manager: SessionManager) {
-    this.managerSubscription = manager.onDidChange(() => this.changedEmitter.fire());
+  public constructor(
+    private readonly manager: SessionManager,
+    private readonly coordination: CoordinationService
+  ) {
+    this.subscriptions = [
+      manager.onDidChange(() => this.changedEmitter.fire()),
+      coordination.onDidChange(() => this.changedEmitter.fire())
+    ];
   }
 
-  public getTreeItem(element: SessionTreeItem): vscode.TreeItem {
+  public getTreeItem(element: SessionTreeElement): vscode.TreeItem {
     return element;
   }
 
-  public getChildren(): SessionTreeItem[] {
-    return this.manager
+  public getChildren(element?: SessionTreeElement): SessionTreeElement[] {
+    const local = this.manager
       .list()
       .map(
         (session) =>
           new SessionTreeItem(session, this.manager.eventsFor(session.id))
       );
+    const live = dedupeCoordinatedSessions(this.coordination.windows())
+      .map(({ window, session }) => new LiveSessionTreeItem(window, session))
+      .sort((left, right) => {
+        const leftPriority = liveSessionPriority(left.coordinatedSession);
+        const rightPriority = liveSessionPriority(right.coordinatedSession);
+        return rightPriority - leftPriority ||
+          right.coordinatedSession.updatedAt - left.coordinatedSession.updatedAt;
+      });
+    if (!element) {
+      if (
+        local.length === 0 &&
+        this.coordination.health().state === 'disabled'
+      ) {
+        return [];
+      }
+      return [
+        new SessionGroupItem('current', 'Current Workspace', local.length),
+        ...(this.coordination.health().state !== 'disabled'
+          ? [new SessionGroupItem('live', 'Live in Other Windows', live.length)]
+          : [])
+      ];
+    }
+    if (!(element instanceof SessionGroupItem)) {
+      return [];
+    }
+    if (element.group === 'current') {
+      return local;
+    }
+    return live.length > 0
+      ? live
+      : [new vscode.TreeItem(
+          this.coordination.health().state === 'degraded'
+            ? 'Coordinator unavailable'
+            : 'No other Lookout windows are live',
+          vscode.TreeItemCollapsibleState.None
+        ) as SessionTreeElement];
   }
 
   public refresh(): void {
@@ -120,7 +225,9 @@ export class SessionTreeProvider
   }
 
   public dispose(): void {
-    this.managerSubscription.dispose();
+    for (const subscription of this.subscriptions) {
+      subscription.dispose();
+    }
     this.changedEmitter.dispose();
   }
 }
@@ -233,5 +340,22 @@ function statusLabel(status: SessionStatus): string {
       return 'unknown';
     case 'closed':
       return 'closed';
+  }
+}
+
+function liveSessionPriority(session: CoordinatedSession): number {
+  if (session.status === 'attention' && session.unread) {
+    return 2;
+  }
+  return session.unread ? 1 : 0;
+}
+
+function hostLabel(kind: CoordinatedWindow['hostKind']): string {
+  switch (kind) {
+    case 'local': return 'local';
+    case 'wsl': return 'WSL';
+    case 'ssh': return 'Remote SSH';
+    case 'dev-container': return 'dev container';
+    case 'other': return 'remote extension host';
   }
 }

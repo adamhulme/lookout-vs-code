@@ -20,12 +20,11 @@
 - Add bounded, abortable Git evidence collection for diff statistics, commits,
   upstream state, conflicts, and stale or unstable baselines as the foundation
   for verification-oriented review packets.
-- Add a metadata-only event ledger and History view with unread navigation,
-  safe provider resume/fork, collision refusal, archive/unarchive, and bounded
-  retention. Attention remains on agent rows rather than a separate feed.
-- Extend History across projects on the same execution host, with atomic
-  multi-window storage, deletion tombstones, expiring reopen/resume handoffs,
-  and explicit trust/provider revalidation in the target window.
+- Add a metadata-only event ledger with safe provider continuation, collision
+  refusal, deletion tombstones, and bounded retention. Attention and live
+  cross-window sessions remain on agent rows rather than a separate history feed.
+- Maintain bounded session metadata across projects on the same execution host,
+  with atomic multi-window storage and explicit trust/provider revalidation.
 - Add opt-in authenticated live coordination between Lookout windows on one VS
   Code profile and execution host: leased metadata-only snapshots, cross-window
   attention focus, duplicate-provider-session detection, crash recovery, and

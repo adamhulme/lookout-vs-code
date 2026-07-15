@@ -1266,37 +1266,8 @@ function reviewPacketItems(
       })
     ];
   }
-  const readiness = packet.readiness;
   const diff = packet.git.diff;
-  const commits = packet.git.commits;
-  const upstream = packet.git.upstream;
-  const conflicts = packet.git.conflicts;
-  const diagnostics = packet.diagnostics;
-  const readinessReasons = readiness.reasons.length > 0
-    ? readiness.reasons.join('; ')
-    : 'Required evidence is current';
-  const commitTooltip = commits.entries.length > 0
-    ? commits.entries
-        .map(
-          (commit) =>
-            `${commit.hash.slice(0, 7)} ${commit.subject} — ${commit.author}`
-        )
-        .join('\n')
-    : 'No commits since the captured baseline';
   return [
-    new ReviewTreeItem(
-      'evidence',
-      `Verification ${readiness.state}`,
-      {
-        description: readinessReasons,
-        tooltip: [
-          `Attribution: ${packet.attribution} physical worktree`,
-          `Evidence collected: ${new Date(packet.collectedAt).toLocaleString()}`,
-          readinessReasons
-        ].join('\n'),
-        warning: readiness.state === 'failed'
-      }
-    ),
     new ReviewTreeItem('evidence', 'Diff evidence', {
       description: `${diff.files} files · +${diff.additions} −${diff.deletions} · ${diff.untrackedFiles} untracked`,
       tooltip: [
@@ -1308,58 +1279,8 @@ function reviewPacketItems(
         .filter(Boolean)
         .join('\n'),
       warning: packet.git.state !== 'complete' || packet.git.baseline.stale
-    }),
-    new ReviewTreeItem('evidence', 'Commits since baseline', {
-      description: `${commits.count}${commits.truncated ? '+' : ''}`,
-      tooltip: commitTooltip,
-      warning: commits.incomplete
-    }),
-    new ReviewTreeItem('evidence', 'Local upstream evidence', {
-      description: upstreamDescription(upstream),
-      tooltip:
-        upstream.state === 'available'
-          ? `Compared with the existing local tracking ref ${upstream.name}; no network fetch was performed.`
-          : 'No network fetch was performed.',
-      warning: upstream.state === 'unavailable'
-    }),
-    new ReviewTreeItem('evidence', 'Conflicts', {
-      description:
-        conflicts.count === 0
-          ? 'none detected'
-          : `${conflicts.count}${conflicts.truncated ? '+' : ''} paths`,
-      tooltip:
-        conflicts.count === 0
-          ? 'No unmerged index entries were detected.'
-          : conflicts.paths.join('\n'),
-      warning: conflicts.count > 0 || conflicts.truncated
-    }),
-    new ReviewTreeItem('evidence', 'Diagnostic delta', {
-      description: `${diagnostics.addedCount} added · ${diagnostics.removedCount} resolved · ${diagnostics.currentCount} current`,
-      tooltip: [
-        `Diagnostic baseline: ${diagnostics.state}`,
-        `${diagnostics.unchangedCount} unchanged`,
-        ...(diagnostics.issues.length > 0
-          ? [`Limits: ${diagnostics.issues.join(', ')}`]
-          : [])
-      ].join('\n'),
-      warning: diagnostics.state !== 'complete' || diagnostics.addedCount > 0
     })
   ];
-}
-
-function upstreamDescription(
-  upstream: ReviewPacket['git']['upstream']
-): string {
-  switch (upstream.state) {
-    case 'available':
-      return `${upstream.name} · ${upstream.ahead} ahead · ${upstream.behind} behind`;
-    case 'none':
-      return 'no local tracking ref';
-    case 'detached':
-      return 'detached HEAD';
-    case 'unavailable':
-      return 'unavailable';
-  }
 }
 
 function packetDescription(

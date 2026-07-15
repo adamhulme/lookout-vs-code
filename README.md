@@ -118,7 +118,6 @@ modifies your user or repository Claude settings.
 | `Lookout: Adopt Existing Terminal as Agent…` | Add an existing native terminal to the Agents view. |
 | `Lookout: Focus Agent…` | Jump to any named agent. |
 | `Lookout: Focus Next Agent Needing Attention` | Triage the next unread session. |
-| `Lookout: Browse Agent History` | Inspect resumable and terminal-only Lookout records. |
 | `Lookout: Configure Cross-Window Coordination` | Enable or inspect the experimental same-host live coordinator. |
 | `Lookout: Launch Agent from Template…` | Recreate a saved profile/folder/worktree/review recipe. |
 | `Lookout: Open Review Layout` | Restore a two-column agent/review layout. |
@@ -156,8 +155,9 @@ The most common settings are:
 - `lookout.review.showRecentImages` — opt in to recent-image scanning.
 - `lookout.review.captureCommandOutput` — globally opt in to transient,
   bounded Codex/Claude command results for newly launched sessions.
-- `lookout.history.globalEnabled` — retain bounded host-local history across
-  projects; enabled by default and never registered for Settings Sync.
+- `lookout.history.globalEnabled` — retain bounded host-local session metadata
+  for continuation and collision safety; enabled by default and never registered
+  for Settings Sync.
 - `lookout.experimental.crossWindowCoordination` — share live metadata between
   Lookout windows on the same execution host; disabled by default.
 

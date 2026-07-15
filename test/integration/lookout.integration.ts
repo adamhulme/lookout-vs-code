@@ -13,12 +13,12 @@ import {
   type CoordinatedSession,
   type CoordinatedWindow
 } from '../../src/coordinationModel';
-import type { GlobalHistoryService } from '../../src/globalHistoryStore';
 import {
-  HistoryGroupItem,
-  HistoryTreeProvider,
-  LiveHistoryTreeItem
-} from '../../src/historyTree';
+  LiveSessionTreeItem,
+  SessionGroupItem,
+  SessionTreeItem,
+  SessionTreeProvider
+} from '../../src/sessionTree';
 import type { SessionManager } from '../../src/sessionManager';
 import type { AgentEvent, AgentSession } from '../../src/types';
 
@@ -146,18 +146,18 @@ suite('Lookout extension-host integration', () => {
     );
   });
 
-  test('shows and sorts remote attention only while it is unread', () => {
+  test('shows and sorts remote Agents attention only while it is unread', () => {
     const remoteWindow = coordinatedWindow([
       coordinatedSession('read-attention', 'attention', false, 400),
       coordinatedSession('unread-update', 'idle', true, 100),
       coordinatedSession('unread-attention', 'attention', true, 50),
       coordinatedSession('read-running', 'running', false, 500)
     ]);
-    const readAttention = new LiveHistoryTreeItem(
+    const readAttention = new LiveSessionTreeItem(
       remoteWindow,
       remoteWindow.sessions[0]
     );
-    const unreadAttention = new LiveHistoryTreeItem(
+    const unreadAttention = new LiveSessionTreeItem(
       remoteWindow,
       remoteWindow.sessions[2]
     );
@@ -167,18 +167,12 @@ suite('Lookout extension-host integration', () => {
     const noopEvent = (
       () => new vscode.Disposable(() => undefined)
     ) as vscode.Event<void>;
-    const provider = new HistoryTreeProvider(
-      {
-        onDidChange: noopEvent,
-        history: () => [],
-        eventsFor: () => [],
-        isOpen: () => false
-      } as unknown as SessionManager,
+    const provider = new SessionTreeProvider(
       {
         onDidChange: noopEvent,
         list: () => [],
-        isCurrentWorkspace: () => false
-      } as unknown as GlobalHistoryService,
+        eventsFor: () => []
+      } as unknown as SessionManager,
       {
         onDidChange: noopEvent,
         windows: () => [remoteWindow],
@@ -187,10 +181,14 @@ suite('Lookout extension-host integration', () => {
       } as unknown as CoordinationService
     );
     try {
+      const groups = provider
+        .getChildren()
+        .filter((item): item is SessionGroupItem => item instanceof SessionGroupItem);
+      assert.deepEqual(groups.map((item) => item.group), ['current', 'live']);
       const live = provider
-        .getChildren(new HistoryGroupItem('live', 'Live in Other Windows', 4))
-        .filter((item): item is LiveHistoryTreeItem =>
-          item instanceof LiveHistoryTreeItem
+        .getChildren(new SessionGroupItem('live', 'Live in Other Windows', 4))
+        .filter((item): item is LiveSessionTreeItem =>
+          item instanceof LiveSessionTreeItem
         );
       assert.deepEqual(
         live.map((item) => item.coordinatedSession.sessionId),
@@ -268,8 +266,11 @@ suite('Lookout extension-host integration', () => {
     assert.equal(api.sessions.get(session.id)?.unread, true);
 
     const row = api.sessionTree
-      .getChildren()
-      .find((item) => item.session.id === session.id);
+      .getChildren(new SessionGroupItem('current', 'Current Workspace', 1))
+      .find(
+        (item): item is SessionTreeItem =>
+          item instanceof SessionTreeItem && item.session.id === session.id
+      );
     assert.equal(row?.session.latestEvent, 'Integration agent needs attention');
 
     await vscode.commands.executeCommand('lookout.focusNextAttention');
@@ -440,11 +441,18 @@ suite('Lookout extension-host integration', () => {
       const worktree = api.reviewTree
         .getChildren(changesGroup)
         .find((item) => item.kind === 'worktree');
-      return worktree
-        ? api.reviewTree
-            .getChildren(worktree)
-            .find((item) => item.change?.path === 'src/review-target.ts')
-        : undefined;
+      if (!worktree) {
+        return undefined;
+      }
+      const children = api.reviewTree.getChildren(worktree);
+      const evidence = children.filter((item) => item.kind === 'evidence');
+      if (!evidence.some((item) => item.label === 'Diff evidence')) {
+        return undefined;
+      }
+      assert.deepEqual(evidence.map((item) => item.label), ['Diff evidence']);
+      return children.find(
+        (item) => item.change?.path === 'src/review-target.ts'
+      );
     }, 'The changed fixture file was not listed');
 
     const baseline = await api.reviewTree.provideTextDocumentContent(

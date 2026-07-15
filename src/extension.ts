@@ -10,6 +10,7 @@ import {
 import { ReviewTreeItem, ReviewTreeProvider } from './reviewTree';
 import { SessionManager } from './sessionManager';
 import {
+  LiveSessionTreeItem,
   SessionStatusBar,
   SessionTreeItem,
   SessionTreeProvider
@@ -17,11 +18,7 @@ import {
 import type { AgentKind, LaunchRequest, SessionStatus } from './types';
 import { UsageManager } from './usageManager';
 import { UsageStatusBar, UsageTreeProvider } from './usageTree';
-import {
-  GlobalHistoryTreeItem,
-  HistoryTreeProvider,
-  LiveHistoryTreeItem
-} from './historyTree';
+import { GlobalHistoryTreeItem } from './historyTree';
 import {
   buildProfileCatalog,
   type AgentProfile
@@ -76,10 +73,6 @@ export async function activate(
   const sessions = new SessionManager(context);
   context.subscriptions.push(sessions);
   await sessions.initialize();
-  const sessionTree = new SessionTreeProvider(sessions);
-  const sessionTreeView = vscode.window.createTreeView('lookout.sessions', {
-    treeDataProvider: sessionTree
-  });
   const sessionStatus = new SessionStatusBar(sessions);
   runtimeLog = vscode.window.createOutputChannel('Lookout', { log: true });
   const reviewTree = new ReviewTreeProvider(
@@ -110,6 +103,10 @@ export async function activate(
     workspaceIdentity
   );
   await coordination.initialize();
+  const sessionTree = new SessionTreeProvider(sessions, coordination);
+  const sessionTreeView = vscode.window.createTreeView('lookout.sessions', {
+    treeDataProvider: sessionTree
+  });
   const globalIntentSubscription = globalHistory.onDidReceiveIntent(
     ({ intent, record }) => {
       void processPendingGlobalHistoryIntent(
@@ -121,16 +118,12 @@ export async function activate(
     }
   );
   await globalHistory.initialize();
-  const historyTree = new HistoryTreeProvider(
-    sessions,
-    globalHistory,
-    coordination
-  );
   const templates = new TemplateManager(context.globalState);
   const doctorOutput = vscode.window.createOutputChannel('Lookout Doctor', {
     log: true
   });
   await templates.initialize();
+  await updateTemplateContext(templates);
 
   context.subscriptions.push(
     sessionTree,
@@ -140,7 +133,6 @@ export async function activate(
     usage,
     usageTree,
     usageStatus,
-    historyTree,
     globalHistory,
     coordination,
     globalIntentSubscription,
@@ -159,7 +151,6 @@ export async function activate(
       reviewTree
     ),
     vscode.window.registerTreeDataProvider('lookout.usage', usageTree),
-    vscode.window.registerTreeDataProvider('lookout.history', historyTree),
     register('lookout.launchAgent', () => chooseAndLaunchAgent(sessions)),
     register('lookout.configureProfiles', () => configureProfiles()),
     register('lookout.openSettings', () =>
@@ -295,7 +286,7 @@ export async function activate(
         await globalHistory.deleteRecord(item.record.id);
       }
     }),
-    register('lookout.focusRemoteSession', async (item?: LiveHistoryTreeItem) => {
+    register('lookout.focusRemoteSession', async (item?: LiveSessionTreeItem) => {
       if (!item) {
         return;
       }
@@ -323,11 +314,6 @@ export async function activate(
       const id = sessionId(item);
       return id ? sessions.unarchiveSession(id) : undefined;
     }),
-    register('lookout.browseHistory', async () => {
-      await vscode.commands.executeCommand('workbench.view.extension.lookout');
-      await vscode.commands.executeCommand('lookout.history.focus');
-    }),
-    register('lookout.refreshHistory', () => historyTree.refresh()),
     register('lookout.deleteHistory', async () => {
       const choice = await vscode.window.showWarningMessage(
         'Delete closed and archived Lookout history? This removes only Lookout metadata and does not delete provider conversations, terminals, worktrees, files, or commits.',
@@ -466,6 +452,14 @@ async function updateSoundContext(): Promise<void> {
     'setContext',
     'lookout.attentionSoundEnabled',
     enabled
+  );
+}
+
+async function updateTemplateContext(templates: TemplateManager): Promise<void> {
+  await vscode.commands.executeCommand(
+    'setContext',
+    'lookout.hasTemplates',
+    templates.list().length > 0
   );
 }
 
@@ -732,6 +726,7 @@ async function createSessionTemplate(templates: TemplateManager): Promise<void> 
   };
   try {
     await templates.create(draft);
+    await updateTemplateContext(templates);
     void vscode.window.showInformationMessage(`Created template ${name}.`);
   } catch (error) {
     void vscode.window.showErrorMessage(
@@ -857,6 +852,7 @@ async function deleteSessionTemplate(templates: TemplateManager): Promise<void> 
   );
   if (choice === 'Delete Template') {
     await templates.remove(selected.template.id);
+    await updateTemplateContext(templates);
   }
 }
 

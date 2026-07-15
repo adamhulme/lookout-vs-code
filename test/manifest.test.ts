@@ -32,8 +32,10 @@ interface Manifest {
   };
   readonly contributes?: {
     readonly commands?: ManifestCommand[];
+    readonly views?: Record<string, Array<{ readonly id?: string }>>;
     readonly menus?: {
       readonly 'view/title'?: ManifestMenuEntry[];
+      readonly 'view/item/context'?: ManifestMenuEntry[];
     };
     readonly viewsWelcome?: Array<{ readonly when?: string }>;
     readonly walkthroughs?: Array<{
@@ -108,6 +110,27 @@ test('shows one Agents settings action that opens all Lookout settings', () => {
     ['lookout.openSettings']
   );
   assert.equal(commands.get('lookout.openSettings')?.title, 'Open Lookout Settings');
+});
+
+test('keeps live windows and contextual launch actions in Agents', () => {
+  const viewIds = manifest.contributes?.views?.lookout?.map((view) => view.id) ?? [];
+  assert.ok(viewIds.includes('lookout.sessions'));
+  assert.equal(viewIds.includes('lookout.history'), false);
+
+  const titleActions = manifest.contributes?.menus?.['view/title'] ?? [];
+  assert.equal(
+    titleActions.some((entry) => entry.command === 'lookout.launchAgentInWorktree'),
+    false
+  );
+  assert.match(
+    titleActions.find((entry) => entry.command === 'lookout.launchTemplate')?.when ?? '',
+    /lookout\.hasTemplates/
+  );
+
+  const remoteAction = manifest.contributes?.menus?.['view/item/context']?.find(
+    (entry) => entry.command === 'lookout.focusRemoteSession'
+  );
+  assert.match(remoteAction?.when ?? '', /view == lookout\.sessions/);
 });
 
 test('disables command-launching contributions outside trusted workspaces', () => {
